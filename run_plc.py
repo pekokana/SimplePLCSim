@@ -59,9 +59,50 @@ def parse_ladder_line(line):
         return {"type": "END"}
 
     # TON / TOF / CTU / RES（未実装）
-    m = re.match(r"(TON|TOF|CTU|RES)\s+(.+)", line)
+    # TON: TON T0 X0 2000 Y0
+    m = re.match(r"TON\s+(T\d+)\s+(X\d+|M\d+)\s+(\d+)\s+(Y\d+|M\d+)", line)
     if m:
-        return {"type": m.group(1), "raw": line}
+        timer, enable, preset, out = m.groups()
+        return {
+            "type": "TON",
+            "timer": timer,
+            "enable": enable,
+            "preset": int(preset),
+            "out": out
+        }
+
+    # CTU: CTU C0 X1 5 M0
+    m = re.match(r"CTU\s+(C\d+)\s+(X\d+|M\d+)\s+(\d+)\s+(Y\d+|M\d+)", line)
+    if m:
+        counter, inp, preset, out = m.groups()
+        return {
+            "type": "CTU",
+            "counter": counter,
+            "input": inp,
+            "preset": int(preset),
+            "out": out
+        }
+
+    # TOF: TOF T1 X2 3000 Y1
+    m = re.match(r"TOF\s+(T\d+)\s+(X\d+|M\d+)\s+(\d+)\s+(Y\d+|M\d+)", line)
+    if m:
+        timer, enable, preset, out = m.groups()
+        return {
+            "type": "TOF",
+            "timer": timer,
+            "enable": enable,
+            "preset": int(preset),
+            "out": out
+        }
+
+    # RES: RES C0   /  RES T0
+    m = re.match(r"RES\s+([TC]\d+)", line)
+    if m:
+        target = m.group(1)
+        return {
+            "type": "RES",
+            "target": target
+        }
 
     # 通常ラダー
     m = re.match(r"\[(.+)\]\s*--\((\w+)\)", line)
@@ -164,6 +205,16 @@ class PLC:
             expr = expr.replace(f"M{i}", f"self.mem.M[{i}]")
         return eval(expr)
 
+    def get_bit(self, name):
+        dev = name[0]
+        idx = int(name[1:])
+        return getattr(self.mem, dev)[idx]
+
+    def set_bit(self, name, value):
+        dev = name[0]
+        idx = int(name[1:])
+        getattr(self.mem, dev)[idx] = value
+
     def scan(self):
         for idx, rung in enumerate(self.ladder):
             t = rung.get("type")
@@ -171,6 +222,93 @@ class PLC:
             if t == "END":
                 self.log(f"SCAN END at rung {idx}")
                 break
+
+            if t == "TON":
+                tid = rung["timer"]
+                enable = self.get_bit(rung["enable"])
+                preset = rung["preset"]
+                out = rung["out"]
+
+                timer = self.mem.T.setdefault(tid, {
+                    "start": None,
+                    "done": False
+                })
+
+                if enable:
+                    if timer["start"] is None:
+                        timer["start"] = time.time()
+                    elif not timer["done"]:
+                        if (time.time() - timer["start"]) * 1000 >= preset:
+                            timer["done"] = True
+                else:
+                    timer["start"] = None
+                    timer["done"] = False
+
+                self.set_bit(out, timer["done"])
+                continue
+
+            if t == "CTU":
+                cid = rung["counter"]
+                inp = self.get_bit(rung["input"])
+                preset = rung["preset"]
+                out = rung["out"]
+
+                counter = self.mem.C.setdefault(cid, {
+                    "count": 0,
+                    "prev": False,
+                    "done": False
+                })
+
+                if inp and not counter["prev"]:
+                    counter["count"] += 1
+                    if counter["count"] >= preset:
+                        counter["done"] = True
+
+                counter["prev"] = inp
+                self.set_bit(out, counter["done"])
+                continue
+
+            if t == "TOF":
+                tid = rung["timer"]
+                enable = self.get_bit(rung["enable"])
+                preset = rung["preset"]
+                out = rung["out"]
+
+                timer = self.mem.T.setdefault(tid, {
+                    "start": None,
+                    "done": False,
+                    "prev_enable": False
+                })
+
+                if enable:
+                    timer["done"] = True
+                    timer["start"] = None
+                else:
+                    if timer["prev_enable"]:
+                        timer["start"] = time.time()
+                    if timer["start"] is not None:
+                        if (time.time() - timer["start"]) * 1000 >= preset:
+                            timer["done"] = False
+
+                timer["prev_enable"] = enable
+                self.set_bit(out, timer["done"])
+                continue
+
+            if t == "RES":
+                target = rung["target"]
+
+                if target.startswith("T"):
+                    if target in self.mem.T:
+                        self.mem.T[target]["start"] = None
+                        self.mem.T[target]["done"] = False
+
+                if target.startswith("C"):
+                    if target in self.mem.C:
+                        self.mem.C[target]["count"] = 0
+                        self.mem.C[target]["done"] = False
+
+                continue
+
 
             if t:
                 self.log(f"SCAN rung {idx}: type={t} (not implemented)")
@@ -187,12 +325,16 @@ class PLC:
             tuple(self.mem.X),
             tuple(self.mem.M),
             tuple(self.mem.D),
-            tuple(self.mem.Y)
+            tuple(self.mem.Y),
+            tuple((k, v.get("done"), v.get("count", None)) for k, v in self.mem.C.items()),
+            tuple((k, v.get("done")) for k, v in self.mem.T.items())
         )
+
         if snap != self.last_snapshot:
             self.log(
                 f"X={self.mem.X} | M={self.mem.M} | "
-                f"D={self.mem.D} | Y={self.mem.Y}"
+                f"D={self.mem.D} | Y={self.mem.Y} | "
+                f"T={self.mem.T} | C={self.mem.C}"
             )
             self.last_snapshot = snap
 

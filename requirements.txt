@@ -1,2 +1,0 @@
-pymodbus==3.11.4
-PyYAML==6.0.3

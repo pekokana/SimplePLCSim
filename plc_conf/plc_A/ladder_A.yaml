@@ -2,7 +2,9 @@ kind: ladder
 version: "1.0"
 
 rungs:
-  - "[X0] --(Y0)"
-  - "TON T0 X1 2000 -> Y1"
-  - "CTU C0 X2 5 -> M2"
+  - "[X0] --(M0)"
+  - "TON T0 M0 2000 Y0"
+  - "TOF T1 X1 3000 Y1"
+  - "CTU C0 X2 3 M1"
+  - "RES C0"
   - "END"

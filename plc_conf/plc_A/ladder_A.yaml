@@ -1,0 +1,8 @@
+kind: ladder
+version: "1.0"
+
+rungs:
+  - "[X0] --(Y0)"
+  - "TON T0 X1 2000 -> Y1"
+  - "CTU C0 X2 5 -> M2"
+  - "END"

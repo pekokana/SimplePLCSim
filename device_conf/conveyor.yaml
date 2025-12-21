@@ -1,0 +1,15 @@
+kind: "device"
+version: "1.0"
+
+device:
+  name: conveyor
+  plc:
+    host: localhost
+    port: 15020
+
+  signals:
+    product_sensor:
+      type: pulse
+      address: 1    # X1
+      pulse_ms: 100
+      interval_ms: 1200

@@ -377,7 +377,6 @@ class PLC:
         try:
             while self.power:
                 self.scan()
-                self.detect_events()
                 self.log_if_changed()
 
                 if time.time() - self.last_alive > 5:

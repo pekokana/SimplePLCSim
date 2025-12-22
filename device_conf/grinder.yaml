@@ -13,7 +13,7 @@ device:
   signals:
     power:
       type: coil
-      address: 1   # X0
+      address: 0   # X0
       pattern:
         - value: true
           duration_ms: 5000

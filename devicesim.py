@@ -4,9 +4,9 @@ import time
 import os
 from datetime import datetime
 from pymodbus.client import ModbusTcpClient
+from pymodbus.exceptions import ModbusIOException
 
 SUPPORTED_DEVICE_VERSIONS = {"1.0"}
-
 
 # -----------------------------
 # Logger
@@ -36,7 +36,6 @@ class Logger:
         self.log("log file closed")
         self.fp.close()
 
-
 # -----------------------------
 # device.yaml loader
 # -----------------------------
@@ -56,11 +55,17 @@ def load_device_yaml(filename):
 
     return conf["device"]
 
-
 # -----------------------------
 # Device Simulator
 # -----------------------------
 class DeviceSimulator:
+    MAX_PLC_ERRORS = 3
+    RECONNECT_WAIT = 1.0
+
+    # ★ NEW: heartbeat 監視設定
+    HEARTBEAT_ADDR = 10000
+    HEARTBEAT_TIMEOUT = 3.0   # 秒（変化しなければ NG）
+
     def __init__(self, yaml_file):
         device = load_device_yaml(yaml_file)
 
@@ -70,39 +75,137 @@ class DeviceSimulator:
         self.log_dir = device.get("log_dir")
 
         plc = device["plc"]
+        self.plc_host = plc["host"]
+        self.plc_port = plc["port"]
 
-        # logger
         self.logger = Logger(self.name, self.log_dir)
         self.log = self.logger.log
 
         self.log(f"loading config: {yaml_file}")
         self.log(f"signals={list(self.signals.keys())}")
 
-        self.client = ModbusTcpClient(plc["host"], port=plc["port"])
-        self.client.connect()
+        self.client = None
+        self.plc_error_count = 0
 
-        self.log(f"[Device:{self.name}] connected to PLC {plc['host']}:{plc['port']}")
+        # heartbeat 状態
+        self.last_heartbeat = None
+        self.last_hb_change = time.time()
+
+        self.connect_plc()
+
         self.log(f"[Device:{self.name}] cycle={self.cycle}s")
-
         self.last_alive = time.time()
 
+    # -----------------------------
+    # PLC Connection
+    # -----------------------------
+    def connect_plc(self):
+        self.log(f"[Device:{self.name}] connecting to PLC {self.plc_host}:{self.plc_port}")
+        self.client = ModbusTcpClient(self.plc_host, port=self.plc_port, timeout=2)
+
+        if not self.client.connect():
+            raise RuntimeError("initial PLC connection failed")
+
+        self.log(f"[Device:{self.name}] PLC connected")
+
+        # heartbeat 初期化
+        self.last_heartbeat = None
+        self.last_hb_change = time.time()
+
+    def handle_plc_error(self, e):
+        self.plc_error_count += 1
+        self.log(
+            f"[Device:{self.name}][WARN] PLC communication error "
+            f"({self.plc_error_count}/{self.MAX_PLC_ERRORS}): {e}"
+        )
+
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+        if self.plc_error_count >= self.MAX_PLC_ERRORS:
+            self.log(f"[Device:{self.name}][FATAL] PLC lost (communication).")
+            self.shutdown()
+            sys.exit(1)
+
+        time.sleep(self.RECONNECT_WAIT)
+        self.connect_plc()
+
+    # -----------------------------
+    # PLC heartbeat check
+    # -----------------------------
+    def check_heartbeat(self):
+        rr = self.client.read_holding_registers(
+            address=self.HEARTBEAT_ADDR,
+            count=1
+        )
+
+        if not rr or rr.isError():
+            raise ModbusIOException("heartbeat read failed")
+
+        hb = rr.registers[0]
+
+        if self.last_heartbeat is None:
+            self.last_heartbeat = hb
+            self.last_hb_change = time.time()
+            return
+
+        if hb != self.last_heartbeat:
+            self.last_heartbeat = hb
+            self.last_hb_change = time.time()
+            return
+
+        if time.time() - self.last_hb_change > self.HEARTBEAT_TIMEOUT:
+            self.log(
+                f"[Device:{self.name}][FATAL] PLC heartbeat stopped "
+                f"(>{self.HEARTBEAT_TIMEOUT}s)"
+            )
+            self.shutdown()
+            sys.exit(1)
+
+    # -----------------------------
+    # Main Loop
+    # -----------------------------
     def run(self):
         self.log(f"[Device:{self.name}] START")
+
         try:
             while True:
-                for name, sig in self.signals.items():
-                    self.process_signal(name, sig)
+                try:
+                    # ★ NEW: heartbeat 監視
+                    self.check_heartbeat()
+
+                    for name, sig in self.signals.items():
+                        self.process_signal(name, sig)
+
+                    self.plc_error_count = 0
+
+                except (ModbusIOException, OSError, ConnectionError) as e:
+                    self.handle_plc_error(e)
 
                 if time.time() - self.last_alive >= 5:
                     self.log(f"[Device:{self.name}] alive")
                     self.last_alive = time.time()
 
                 time.sleep(self.cycle)
-        finally:
-            self.client.close()
-            self.log(f"[Device:{self.name}] STOP")
-            self.logger.close()
 
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        try:
+            if self.client:
+                self.client.close()
+        except Exception:
+            pass
+
+        self.log(f"[Device:{self.name}] STOP")
+        self.logger.close()
+
+    # -----------------------------
+    # Signal Processing
+    # -----------------------------
     def process_signal(self, name, sig):
         typ = sig["type"]
 
@@ -145,6 +248,7 @@ class DeviceSimulator:
 
         if time.time() >= sig["_next"]:
             addr = sig["address"]
+
             self.log(f"[{self.name}] {name} pulse -> X{addr} ON")
             self.client.write_coil(addr, True)
 
@@ -154,7 +258,6 @@ class DeviceSimulator:
             self.log(f"[{self.name}] {name} pulse -> X{addr} OFF")
 
             sig["_next"] = time.time() + sig["interval_ms"] / 1000
-
 
 # -----------------------------
 # 起動

@@ -1,0 +1,23 @@
+kind: orchestrator
+version: "1.0"
+log:
+  dir: logs
+services:
+  - name: plc1
+    type: plc
+    command: [plcsim.py]
+    args:
+      - "plc_conf/plc_A/plc_A.yaml"
+      - "plc_conf/plc_A/ladder_A.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15020
+      timeout_sec: 15
+
+  - name: device1
+    type: device
+    depends_on: [plc1]
+    command: [devicesim.py]
+    args:
+      - "device_conf/grinder.yaml"

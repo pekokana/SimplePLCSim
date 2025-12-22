@@ -40,6 +40,20 @@ class Logger:
 
 
 # -----------------------------
+# システムメモリ（ladder 非公開）
+# -----------------------------
+class SystemMemory:
+    def __init__(self):
+        self.heartbeat = 0
+        self.scan_count = 0
+        self.start_time = time.time()
+
+    @property
+    def uptime_sec(self):
+        return int(time.time() - self.start_time)
+
+
+# -----------------------------
 # メモリ
 # -----------------------------
 class Memory:
@@ -48,8 +62,11 @@ class Memory:
         self.Y = [False] * y
         self.M = [False] * m
         self.D = [0] * d
+
         self.T = {}
         self.C = {}
+
+        self.sys = SystemMemory()
 
 
 # -----------------------------
@@ -61,8 +78,6 @@ def parse_ladder_line(line):
     if line.startswith("END"):
         return {"type": "END"}
 
-    # TON / TOF / CTU / RES（未実装）
-    # TON: TON T0 X0 2000 Y0
     m = re.match(r"TON\s+(T\d+)\s+(X\d+|M\d+)\s+(\d+)\s+(Y\d+|M\d+)", line)
     if m:
         timer, enable, preset, out = m.groups()
@@ -74,7 +89,6 @@ def parse_ladder_line(line):
             "out": out
         }
 
-    # CTU: CTU C0 X1 5 M0
     m = re.match(r"CTU\s+(C\d+)\s+(X\d+|M\d+)\s+(\d+)\s+(Y\d+|M\d+)", line)
     if m:
         counter, inp, preset, out = m.groups()
@@ -86,7 +100,6 @@ def parse_ladder_line(line):
             "out": out
         }
 
-    # TOF: TOF T1 X2 3000 Y1
     m = re.match(r"TOF\s+(T\d+)\s+(X\d+|M\d+)\s+(\d+)\s+(Y\d+|M\d+)", line)
     if m:
         timer, enable, preset, out = m.groups()
@@ -98,34 +111,25 @@ def parse_ladder_line(line):
             "out": out
         }
 
-    # RES: RES C0   /  RES T0
     m = re.match(r"RES\s+([TC]\d+)", line)
     if m:
-        target = m.group(1)
-        return {
-            "type": "RES",
-            "target": target
-        }
+        return {"type": "RES", "target": m.group(1)}
 
-    # 通常ラダー
     m = re.match(r"\[(.+)\]\s*--\((\w+)\)", line)
     if m:
         logic_str, coil = m.groups()
         return {"logic": logic_str.strip(), "coil": coil.strip()}
 
-    # 計算
     m = re.match(r"(D\d+)\s*=\s*(D\d+)\s*([\+\-\*/])\s*(D\d+)", line)
     if m:
         dest, src1, op, src2 = m.groups()
-        typ_map = {'+': 'ADD', '-': 'SUB', '*': 'MUL', '/': 'DIV'}
         return {
-            "type": typ_map[op],
+            "type": {'+': 'ADD', '-': 'SUB', '*': 'MUL', '/': 'DIV'}[op],
             "dest": int(dest[1:]),
             "src1": int(src1[1:]),
             "src2": int(src2[1:])
         }
 
-    # MOV
     m = re.match(r"(D\d+)\s*=\s*(D\d+)", line)
     if m:
         dest, src = m.groups()
@@ -142,32 +146,25 @@ def load_ladder_yaml(filename):
         data = yaml.safe_load(f)
 
     if data.get("kind") != "ladder":
-        raise ValueError("invalid ladder yaml: kind must be 'ladder'")
-
-    if data.get("version") != "1.0":
-        raise ValueError("unsupported ladder version")
+        raise ValueError("invalid ladder yaml")
 
     rungs = []
     for line in data.get("rungs", []):
         rung = parse_ladder_line(line)
         if rung:
             rungs.append(rung)
-
     return rungs
 
 
 # -----------------------------
-# plc.yaml 読み込み（NEW）
+# plc.yaml 読み込み
 # -----------------------------
 def load_plc_yaml(filename):
     with open(filename, encoding="utf-8") as f:
         plc_conf = yaml.safe_load(f)
 
     if plc_conf.get("kind") != "plc":
-        raise ValueError("invalid plc yaml: kind must be 'plc'")
-
-    if plc_conf.get("version") != "1.0":
-        raise ValueError("unsupported plc version")
+        raise ValueError("invalid plc yaml")
 
     return plc_conf
 
@@ -190,8 +187,7 @@ class PLC:
         self.power = plc_conf["power"]
 
         name = plc_conf.get("name", "plc")
-        log_dir = plc_conf.get("log_dir")
-        self.logger = Logger(f"plc_{name}", log_dir)
+        self.logger = Logger(f"plc_{name}", plc_conf.get("log_dir"))
         self.log = self.logger.log
 
         self.log("PLC initialized")
@@ -200,33 +196,11 @@ class PLC:
         self.last_snapshot = None
         self.last_alive = time.time()
 
-        self.event_queue = deque(maxlen=1000)
-        self.prev_snapshot = {
-            "X": list(self.mem.X),
-            "Y": list(self.mem.Y),
-            "M": list(self.mem.M),
-            "D": list(self.mem.D),
-        }
-
-    def eval_logic(self, expr):
-        expr = expr.replace("AND", "and").replace("OR", "or").replace("NOT", "not")
-        for i in range(len(self.mem.X)):
-            expr = expr.replace(f"X{i}", f"self.mem.X[{i}]")
-        for i in range(len(self.mem.M)):
-            expr = expr.replace(f"M{i}", f"self.mem.M[{i}]")
-        return eval(expr)
-
-    def get_bit(self, name):
-        dev = name[0]
-        idx = int(name[1:])
-        return getattr(self.mem, dev)[idx]
-
-    def set_bit(self, name, value):
-        dev = name[0]
-        idx = int(name[1:])
-        getattr(self.mem, dev)[idx] = value
-
     def scan(self):
+        # system heartbeat 更新
+        self.mem.sys.heartbeat += 1
+        self.mem.sys.scan_count += 1
+
         for idx, rung in enumerate(self.ladder):
             t = rung.get("type")
 
@@ -235,75 +209,95 @@ class PLC:
                 break
 
             if t == "TON":
-                tid = rung["timer"]
+                timer = rung["timer"]
                 enable = self.get_bit(rung["enable"])
                 preset = rung["preset"]
-                out = rung["out"]
+                out_dev = rung["out"][0]
+                out_bit = int(rung["out"][1:])
 
-                timer = self.mem.T.setdefault(tid, {
-                    "start": None,
-                    "done": False
-                })
+                st = self.mem.T.setdefault(
+                    timer,
+                    {"acc": 0, "on": False}
+                )
 
                 if enable:
-                    if timer["start"] is None:
-                        timer["start"] = time.time()
-                    elif not timer["done"]:
-                        if (time.time() - timer["start"]) * 1000 >= preset:
-                            timer["done"] = True
+                    st["acc"] += 1
+                    if st["acc"] >= preset:
+                        st["on"] = True
                 else:
-                    timer["start"] = None
-                    timer["done"] = False
+                    st["acc"] = 0
+                    st["on"] = False
 
-                self.set_bit(out, timer["done"])
+                prev = getattr(self.mem, out_dev)[out_bit]
+                getattr(self.mem, out_dev)[out_bit] = st["on"]
+
+                if prev != st["on"]:
+                    self.log(
+                        f"[TON] {timer} acc={st['acc']} preset={preset} -> {rung['out']}={st['on']}"
+                    )
+
                 continue
 
             if t == "CTU":
-                cid = rung["counter"]
+                counter = rung["counter"]
                 inp = self.get_bit(rung["input"])
                 preset = rung["preset"]
                 out = rung["out"]
 
-                counter = self.mem.C.setdefault(cid, {
-                    "count": 0,
-                    "prev": False,
-                    "done": False
-                })
+                st = self.mem.C.setdefault(
+                    counter,
+                    {"count": 0, "prev": False, "done": False}
+                )
 
-                if inp and not counter["prev"]:
-                    counter["count"] += 1
-                    if counter["count"] >= preset:
-                        counter["done"] = True
+                if inp and not st["prev"]:
+                    st["count"] += 1
+                    if st["count"] >= preset:
+                        st["done"] = True
 
-                counter["prev"] = inp
-                self.set_bit(out, counter["done"])
+                st["prev"] = inp
+
+                prev = self.get_bit(out)
+                self.set_bit(out, st["done"])
+
+                if prev != st["done"]:
+                    self.log(
+                        f"[CTU] {counter} count={st['count']} preset={preset} -> {out}={st['done']}"
+                    )
+
                 continue
+
 
             if t == "TOF":
-                tid = rung["timer"]
+                timer = rung["timer"]
                 enable = self.get_bit(rung["enable"])
                 preset = rung["preset"]
-                out = rung["out"]
+                out_dev = rung["out"][0]
+                out_bit = int(rung["out"][1:])
 
-                timer = self.mem.T.setdefault(tid, {
-                    "start": None,
-                    "done": False,
-                    "prev_enable": False
-                })
+                st = self.mem.T.setdefault(
+                    timer,
+                    {"acc": 0, "on": False}
+                )
 
                 if enable:
-                    timer["done"] = True
-                    timer["start"] = None
+                    st["on"] = True
+                    st["acc"] = preset
                 else:
-                    if timer["prev_enable"]:
-                        timer["start"] = time.time()
-                    if timer["start"] is not None:
-                        if (time.time() - timer["start"]) * 1000 >= preset:
-                            timer["done"] = False
+                    if st["acc"] > 0:
+                        st["acc"] -= 1
+                    else:
+                        st["on"] = False
 
-                timer["prev_enable"] = enable
-                self.set_bit(out, timer["done"])
+                prev = getattr(self.mem, out_dev)[out_bit]
+                getattr(self.mem, out_dev)[out_bit] = st["on"]
+
+                if prev != st["on"]:
+                    self.log(
+                        f"[TOF] {timer} acc={st['acc']} preset={preset} -> {rung['out']}={st['on']}"
+                    )
+
                 continue
+
 
             if t == "RES":
                 target = rung["target"]
@@ -315,17 +309,21 @@ class PLC:
                             "done": False,
                             "prev_enable": False
                         }
+                        self.log(f"[RES] Timer {target} reset")
 
-                if target.startswith("C"):
+                elif target.startswith("C"):
                     if target in self.mem.C:
                         self.mem.C[target] = {
                             "count": 0,
                             "prev": False,
                             "done": False
                         }
+                        self.log(f"[RES] Counter {target} reset")
 
                 continue
 
+
+            # 未実装検知
             if t:
                 self.log(f"SCAN rung {idx}: type={t} (not implemented)")
                 continue
@@ -334,53 +332,46 @@ class PLC:
                 res = self.eval_logic(rung["logic"])
                 dev = rung["coil"][0]
                 bit = int(rung["coil"][1:])
+
+                old = getattr(self.mem, dev)[bit]
                 getattr(self.mem, dev)[bit] = res
 
-    def detect_events(self):
-        # Y変化 → 出力イベント
-        for i, (b, a) in enumerate(zip(self.prev_snapshot["Y"], self.mem.Y)):
-            if b != a:
-                self.raise_event("OUTPUT_CHANGE", f"Y{i}", b, a)
+                if old != res:
+                    self.log(
+                        f"[LADDER] rung# {idx} "
+                        f"{rung['logic']} -> {rung['coil']} = {res}"
+                    )
 
-        # M変化 → 内部イベント
-        for i, (b, a) in enumerate(zip(self.prev_snapshot["M"], self.mem.M)):
-            if b != a:
-                self.raise_event("INTERNAL_CHANGE", f"M{i}", b, a)
+    def get_bit(self, addr):
+        dev = addr[0]
+        bit = int(addr[1:])
+        return getattr(self.mem, dev)[bit]
 
-        # スナップショット更新
-        self.prev_snapshot["X"] = list(self.mem.X)
-        self.prev_snapshot["Y"] = list(self.mem.Y)
-        self.prev_snapshot["M"] = list(self.mem.M)
-        self.prev_snapshot["D"] = list(self.mem.D)
+    def set_bit(self, name: str, value: bool):
+        """X/M/Y のビットを設定"""
+        dev = name[0]
+        idx = int(name[1:])
+        getattr(self.mem, dev)[idx] = value
 
-    def log_if_changed(self):
-        snap = (
-            tuple(self.mem.X),
-            tuple(self.mem.M),
-            tuple(self.mem.D),
-            tuple(self.mem.Y),
-            tuple((k, v.get("done"), v.get("count", None)) for k, v in self.mem.C.items()),
-            tuple((k, v.get("done")) for k, v in self.mem.T.items())
-        )
-
-        if snap != self.last_snapshot:
-            self.log(
-                f"X={self.mem.X} | M={self.mem.M} | "
-                f"D={self.mem.D} | Y={self.mem.Y} | "
-                f"T={self.mem.T} | C={self.mem.C}"
-            )
-            self.last_snapshot = snap
-
+    def eval_logic(self, expr):
+        expr = expr.replace("AND", "and").replace("OR", "or").replace("NOT", "not")
+        for i in range(len(self.mem.X)):
+            expr = expr.replace(f"X{i}", f"self.mem.X[{i}]")
+        for i in range(len(self.mem.M)):
+            expr = expr.replace(f"M{i}", f"self.mem.M[{i}]")
+        return eval(expr)
 
     def run(self):
         self.log("PLC START")
         try:
             while self.power:
                 self.scan()
-                self.log_if_changed()
 
                 if time.time() - self.last_alive > 5:
-                    self.log("PLC alive")
+                    self.log(
+                        f"PLC alive | hb={self.mem.sys.heartbeat} "
+                        f"uptime={self.mem.sys.uptime_sec}s"
+                    )
                     self.last_alive = time.time()
 
                 time.sleep(self.scan_cycle)
@@ -394,14 +385,11 @@ class PLC:
 # -----------------------------
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python plc.py plc.yaml ladder.yaml")
+        print("Usage: python plcsim.py plc.yaml ladder.yaml")
         sys.exit(1)
 
-    plc_conf_file = sys.argv[1]
-    ladder_file = sys.argv[2]
-
-    plc_conf = load_plc_yaml(plc_conf_file)
-    ladder_conf = load_ladder_yaml(ladder_file)
+    plc_conf = load_plc_yaml(sys.argv[1])
+    ladder_conf = load_ladder_yaml(sys.argv[2])
 
     plc = PLC(plc_conf, ladder_conf)
 

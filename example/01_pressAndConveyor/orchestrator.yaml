@@ -1,0 +1,44 @@
+kind: orchestrator
+version: "1.0"
+log:
+  dir: logs
+services:
+  # プレス工程の制御
+  - name: plc_press
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/01_pressAndConveyor/plc_press.yaml"
+      - "example/01_pressAndConveyor/press_ladder.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15021
+
+  # 搬送工程の制御
+  - name: plc_conv
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/01_pressAndConveyor/plc_conv.yaml"
+      - "example/01_pressAndConveyor/conv_ladder.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15020
+
+  # プレス機の物理挙動（起動スイッチやセンサー）
+  - name: dev_press
+    type: device
+    depends_on: [plc_press]
+    command: [devicesim.py]
+    args:
+      - "example/01_pressAndConveyor/device_press_sensor.yaml"
+
+  # コンベアの物理挙動（荷物検知センサー）
+  - name: dev_conv
+    type: device
+    depends_on: [plc_conv]
+    command: [devicesim.py]
+    args:
+      - "example/01_pressAndConveyor/device_conv_sensor.yaml"

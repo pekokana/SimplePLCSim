@@ -1,0 +1,30 @@
+kind: device
+version: "1.0"
+
+device:
+  name: dev_press
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15021
+
+  cycle_ms: 100
+
+  signals:
+    power:
+      type: coil
+      address: 0   # X0
+      pattern:
+        - value: true
+          duration_ms: 500
+        - value: false
+          duration_ms: 10000
+
+    motor_rpm:
+      type: register
+      address: 0    # D0
+      pattern:
+        - value: 0
+          duration_ms: 100
+        - value: 100
+          duration_ms: 300

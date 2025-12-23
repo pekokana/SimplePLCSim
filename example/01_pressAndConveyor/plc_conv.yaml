@@ -1,0 +1,14 @@
+kind: plc
+version: "1.0"
+name: "plc_conv"
+log_dir: logs
+power: true
+cpu:
+  scan_cycle_ms: 100
+memory:
+  X: 10
+  Y: 10
+  M: 20
+  D: 20
+modbus:
+  port: 15020

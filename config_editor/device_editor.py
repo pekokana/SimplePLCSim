@@ -13,10 +13,7 @@ class DeviceEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # -----------------------------
-        # Device base fields
-        # -----------------------------
-        self.name_edit = QLineEdit()
+        self.name_edit = QLineEdit("Device_A")
         self.cycle_spin = QSpinBox()
         self.cycle_spin.setRange(10, 10000)
         self.cycle_spin.setValue(100)
@@ -25,14 +22,12 @@ class DeviceEditor(QWidget):
         form.addRow("Device Name", self.name_edit)
         form.addRow("Cycle (ms)", self.cycle_spin)
 
-        # -----------------------------
-        # Signals Area
-        # -----------------------------
-        self.signal_area = QVBoxLayout()
-        self.signal_area.addStretch()
+        # Signals area
+        self.signal_layout = QVBoxLayout()
+        self.signal_layout.addStretch()
 
         container = QWidget()
-        container.setLayout(self.signal_area)
+        container.setLayout(self.signal_layout)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -41,9 +36,6 @@ class DeviceEditor(QWidget):
         add_signal_btn = QPushButton("+ Add Signal")
         add_signal_btn.clicked.connect(self.add_signal)
 
-        # -----------------------------
-        # Bottom Buttons
-        # -----------------------------
         save_btn = QPushButton("Save YAML")
         save_btn.clicked.connect(self.save_yaml)
 
@@ -52,54 +44,35 @@ class DeviceEditor(QWidget):
         btns.addWidget(add_signal_btn)
         btns.addWidget(save_btn)
 
-        # -----------------------------
-        # Main layout
-        # -----------------------------
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(scroll)
         layout.addLayout(btns)
 
-    # -----------------------------
-    # Signal management
-    # -----------------------------
-    def add_signal(self, name="", data=None):
-        name = "new_signal"
-        data = {
-            "type": "coil",
-            "address": 0,
-            "pattern": [
-                {"value": True, "duration_ms": 1000},
-                {"value": False, "duration_ms": 1000},
-            ],
-        }
+    def add_signal(self):
+        editor = SignalEditor(
+            name="new_signal",
+            data={"type": "coil", "address": 0},
+            parent=self
+        )
+        self.signal_layout.insertWidget(
+            self.signal_layout.count() - 1,
+            editor
+        )
 
-        editor = SignalEditor(name, data, parent=self)
-        if editor.exec():
-            new_name, new_data = editor.get_result()
-            self.signals[new_name] = new_data
-            self.refresh_list()
-
-    def remove_signal(self, editor):
-        editor.setParent(None)
-        editor.deleteLater()
-
-    # -----------------------------
-    # YAML
-    # -----------------------------
     def to_yaml(self):
         signals = {}
-        for i in range(self.signal_area.count()):
-            w = self.signal_area.itemAt(i).widget()
+
+        for i in range(self.signal_layout.count()):
+            w = self.signal_layout.itemAt(i).widget()
             if isinstance(w, SignalEditor):
                 name = w.name_edit.text().strip()
-                if not name:
-                    continue
-                signals[name] = w.to_dict()
+                if name:
+                    signals[name] = w.to_dict()
 
         return {
-            "kind": "DeviceConfig",
-            "version": "v1",
+            "kind": "device",
+            "version": "1.0",
             "device": {
                 "name": self.name_edit.text(),
                 "cycle_ms": self.cycle_spin.value(),
@@ -107,12 +80,21 @@ class DeviceEditor(QWidget):
             }
         }
 
+    def load_yaml(self, data):
+        dev = data["device"]
+        self.name_edit.setText(dev["name"])
+        self.cycle_spin.setValue(dev["cycle_ms"])
+
+        for sig_name, sig in dev.get("signals", {}).items():
+            editor = SignalEditor(sig_name, sig, parent=self)
+            self.signal_layout.insertWidget(
+                self.signal_layout.count() - 1,
+                editor
+            )
+
+
     def save_yaml(self):
         data = self.to_yaml()
         text = yaml.dump(data, allow_unicode=True, sort_keys=False)
 
-        QMessageBox.information(
-            self,
-            "Generated YAML",
-            text
-        )
+        QMessageBox.information(self, "Generated YAML", text)

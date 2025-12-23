@@ -15,6 +15,8 @@ from PySide6.QtGui import QAction
 
 from plc_editor import PLCEditor
 from device_editor import DeviceEditor
+from ladder_editor import LadderEditor
+
 
 
 class MainWindow(QMainWindow):
@@ -33,26 +35,27 @@ class MainWindow(QMainWindow):
     # -----------------------------
     def _build_menu(self):
         menubar = self.menuBar()
-
         file_menu = menubar.addMenu("File")
 
+        open_act = QAction("Open YAML", self)
+        open_act.triggered.connect(self.open_yaml)
+
         new_plc = QAction("New PLC YAML", self)
+        new_plc.triggered.connect(self.open_plc_editor)
         new_device = QAction("New Device YAML", self)
+        new_device.triggered.connect(self.open_device_editor)
         exit_act = QAction("Exit", self)
 
-        new_plc.triggered.connect(self.open_plc_editor)
-        new_device.triggered.connect(self.open_device_editor)
-        exit_act.triggered.connect(self.close)
+        new_ladder = QAction("New Ladder YAML", self)
+        new_ladder.triggered.connect(self.open_ladder_editor)
 
+        file_menu.addAction(open_act)
+        file_menu.addSeparator()
         file_menu.addAction(new_plc)
         file_menu.addAction(new_device)
+        file_menu.addAction(new_ladder)
         file_menu.addSeparator()
         file_menu.addAction(exit_act)
-
-        help_menu = menubar.addMenu("Help")
-        about = QAction("About", self)
-        about.triggered.connect(self.show_about)
-        help_menu.addAction(about)
 
     # -----------------------------
     # Open Editors
@@ -65,6 +68,9 @@ class MainWindow(QMainWindow):
         editor = DeviceEditor()
         self._open_subwindow(editor, "Device Editor")
 
+    def open_ladder_editor(self):
+        self._open_subwindow(LadderEditor(), "Ladder Editor")
+
     def _open_subwindow(self, widget, title):
         sub = QMdiSubWindow()
         sub.setWidget(widget)
@@ -73,6 +79,31 @@ class MainWindow(QMainWindow):
 
         self.mdi.addSubWindow(sub)
         sub.show()
+
+    def open_yaml(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open YAML", "", "YAML (*.yaml *.yml)"
+        )
+        if not path:
+            return
+
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        kind = data.get("kind")
+
+        if kind == "plc":
+            editor = PLCEditor()
+            editor.load_yaml(data)
+            self._open_subwindow(editor, f"PLC Editor - {path}")
+        elif kind == "device":
+            editor = DeviceEditor()
+            editor.load_yaml(data)
+            self._open_subwindow(editor, f"Device Editor - {path}")
+        else:
+            QMessageBox.warning(self, "Unknown", f"Unknown kind: {kind}")
+
 
     # -----------------------------
     # Help

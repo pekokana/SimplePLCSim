@@ -1,96 +1,91 @@
-# PLC / SCADA 学習用 簡易シミュレータ
+# PLC / SCADA 学習用 簡易シミュレータ (PLC-SCADA Lab)
 
 ## 概要
 
-本リポジトリは、
-**SCADAおよびPLCの理解を目的とした学習用シミュレータ** です。
+本リポジトリは、Webエンジニアの視点で**PLC（Programmable Logic Controller）のスキャンモデルとSCADAとの通信挙動を理解するため**に開発した学習用シミュレータです。
 
-PLC実機が手元にない環境でも、
-
-* PLCのスキャンモデル
-* メモリ構造（X / Y / M / D）
-* ModbusによるI/O
-* センサー値の揺らぎ
-
-を体験できることを目的としています。
-
+物理的なPLC実機やセンサーがなくても、Python上で「制御ロジック（PLC）」「物理デバイス（装置）」「プロセス監視（Orchestrator）」を動かし、Modbus TCPを介したデータの流れを体感・検証できます。
 
 ## 特徴
 
-* PLCスキャン方式を再現
-* X / Y / M / D メモリモデル
-* YAMLによる設定駆動
-* Modbus TCP通信
-* センサーの変動・パルス信号再現
-
-※ 実機PLCの完全再現を目的としたものではありません。
+* **PLCスキャンサイクルの完全再現**: 読み込み・演算・出力の1サイクルをループ実行。
+* **実戦的なラダー命令**:
+* 接点（X, Y, M）の論理演算。
+* タイマー命令（TON, TOF）、カウンタ命令（CTU）をサポート。
 
 
+* **マルチプロセス・オーケストレーション**: `orchestrator.py` により、PLCとデバイスを独立したプロセスとして管理。依存関係に基づいた起動や死活監視、自動再起動が可能。
+* **Modbus TCP ブリッジ**: PLC内部メモリ（X, Y, M, D）をModbus経由で外部公開。SCADA（別システム）からのポーリングを想定した設計。
+* **デバイスエミュレーション**: センサーのゆらぎや、モーターの回転数変化、パルス信号などをYAML定義でシミュレート。
 
-## 動作環境
+## システム構成図
 
-* Python 3.10 以上
-* OS: Windows / Linux / macOS
-
-### 使用ライブラリ
-
-* pymodbus
-* PyYAML
-
-
+1. **Orchestrator**: プロセス管理（PLCとDeviceを叩き起こし、監視する）
+2. **PLC Simulator**: ロジック演算 + Modbus サーバー
+3. **Device Simulator**: 仮想デバイス（Modbus クライアントとしてPLCに信号を送る）
 
 ## セットアップ
 
 ```bash
+# リポジトリをクローン
+git clone https://github.com/pekokana/SimplePLCSim
+cd SimplePLCSim
+
+# 依存ライブラリのインストール
 pip install -r requirements.txt
+
 ```
-
-
 
 ## 実行方法
 
-### PLCシミュレータ起動
+最も簡単な方法は、オーケストレーターを使用して一括起動することです。
+
+### 1. システム全体の一括起動（推奨）
 
 ```bash
-python run_plc.py plc.yaml ladder.yaml
+python orchestrator.py orchestrator.yaml
+
 ```
 
-### デバイスシミュレータ起動
+これにより、PLC（`plcsim.py`）とデバイス（`devicesim.py`）が自動的に立ち上がり、相互に通信を開始します。
+
+### 2. 個別起動（デバッグ用）
 
 ```bash
-python device_simulator.py device_conf/sample_device.yaml
+# PLCの起動
+python plcsim.py plc_conf/plc_A/plc_A.yaml plc_conf/plc_A/ladder_A.yaml
+
+# デバイスの起動
+python devicesim.py device_conf/grinder.yaml
+
 ```
 
+## ラダーロジック（命令セット）
 
+`ladder.yaml` では以下の命令を記述可能です。
 
-## 学習目的について
+| 命令 | 内容 | 記述例 |
+| --- | --- | --- |
+| **Logic** | 論理演算（AND/OR/NOT） | `[X0 AND NOT X1] --(M0)` |
+| **TON** | オンディレイタイマー | `TON T0 M0 2000 Y0` (M0がONで2秒後にY0がON) |
+| **TOF** | オフディレイタイマー | `TOF T1 X1 3000 Y1` (X1がOFFで3秒後にY1がOFF) |
+| **CTU** | カウントアップ | `CTU C0 X2 5 M1` (X2が5回ONしたらM1がON) |
+| **RES** | リセット（カウンタ等） | `RES C0` |
 
-本プロジェクトは、
+## Modbus アドレスマップ
 
-* PLCとは何か
-* SCADAがPLCから「何を」「どう取得しているか」
-* データが不安定であることを前提とした設計
+外部SCADA等から接続する場合の標準的なマッピングです。
 
-を理解するための **学習・検証用ツール** です。
+* **Coils (0x)**: `0`〜 (X), `20`〜 (Y), `40`〜 (M)
+* **Holding Registers (4x)**: `0`〜 (D), `10000`〜 (System Info: Heartbeat, Uptime)
 
+## 今後の展望
 
-
-## 今後の拡張予定
-
-* 状態遷移のイベント化
-* メッセージング連携
-* SCADA的タグ管理
-* 履歴データの蓄積
-
-
+* [ ] **SCADAダッシュボードの実装**: StreamlitやReactを用いたリアルタイム可視化。
+* [ ] **履歴データ (Historian)**: InfluxDB等への時系列データ保存。
+* [ ] **タグ管理メタデータ**: Modbusアドレスを論理名で管理する抽象化層の導入。
 
 ## ライセンス
 
 MIT License
 
-
-
-## 最後に
-
-Webエンジニア視点でSCADA・PLCを理解しようとした試行錯誤の成果です。
-同じような興味を持つ方の参考になれば幸いです。

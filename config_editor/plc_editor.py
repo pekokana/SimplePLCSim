@@ -83,6 +83,17 @@ class PLCEditor(QWidget):
             }
         }
 
+    def load_yaml(self, data):
+        self.name.setText(data.get("name", ""))
+        self.version.setText(data.get("version", "1.0"))
+        self.scan_cycle.setValue(data["cpu"]["scan_cycle_ms"])
+        self.mem_x.setValue(data["memory"]["X"])
+        self.mem_y.setValue(data["memory"]["Y"])
+        self.mem_m.setValue(data["memory"]["M"])
+        self.mem_d.setValue(data["memory"]["D"])
+        self.port.setValue(data["modbus"]["port"])
+
+
     def save_yaml(self):
         path, _ = QFileDialog.getSaveFileName(
             self,

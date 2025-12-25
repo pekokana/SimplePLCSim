@@ -1,0 +1,45 @@
+kind: orchestrator
+version: "1.0"
+log:
+  dir: "logs"
+
+services:
+  # --- 前工程: プレス機 PLC ---
+  - name: plc_press
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/02_UsingIoDevice/plc_press.yaml"
+      - "example/02_UsingIoDevice/press_ladder.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15020
+
+  # --- 後工程: コンベア PLC ---
+  - name: plc_conv
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/02_UsingIoDevice/plc_conv.yaml"
+      - "example/02_UsingIoDevice/conv_ladder.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15030
+
+  # --- 神経: PLC間データブリッジ ---
+  - name: bridge_logic
+    type: iodevice  # ← ここが重要
+    command: [iodevice.py]
+    args: 
+      - example/02_UsingIoDevice/bridge_logic.yaml
+    depends_on: [plc_press, plc_conv]
+
+  # --- 体: プレス機の物理デバイス ---
+  - name: press_sensor
+    type: device
+    command: [device.py]
+    args: 
+      - example/02_UsingIoDevice/device_press_sensor.yaml
+    depends_on: [plc_press]

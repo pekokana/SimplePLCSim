@@ -62,7 +62,7 @@ class DeviceSimulator:
     MAX_PLC_ERRORS = 3
     RECONNECT_WAIT = 1.0
 
-    # ★ NEW: heartbeat 監視設定
+    # heartbeat 監視設定
     HEARTBEAT_ADDR = 10000
     HEARTBEAT_TIMEOUT = 3.0   # 秒（変化しなければ NG）
 
@@ -173,7 +173,7 @@ class DeviceSimulator:
         try:
             while True:
                 try:
-                    # ★ NEW: heartbeat 監視
+                    # heartbeat 監視
                     self.check_heartbeat()
 
                     for name, sig in self.signals.items():

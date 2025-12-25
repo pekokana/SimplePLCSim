@@ -1,0 +1,18 @@
+kind: device
+version: "1.0"
+device:
+  name: "press_sensor_unit"
+  cycle_ms: 500
+  log_dir: "logs"
+  # 接続先PLCの情報
+  plc:
+    host: "localhost"
+    port: 15020
+  # 発生させる信号パターン
+  signals:
+    # 10秒に1回、加工完了センサー(X10)をパルス(1秒ON)で発生させる
+    press_finish_sensor:
+      type: "pulse"
+      address: 10
+      pulse_ms: 1000
+      interval_ms: 10000

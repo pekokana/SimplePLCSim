@@ -115,10 +115,18 @@ def parse_ladder_line(line):
     if m:
         return {"type": "RES", "target": m.group(1)}
 
-    m = re.match(r"\[(.+)\]\s*--\((\w+)\)", line)
+    # m = re.match(r"\[(.+)\]\s*--\((\w+)\)", line)
+    # if m:
+    #     logic_str, coil = m.groups()
+    #     return {"logic": logic_str.strip(), "coil": coil.strip()}
+
+    m = re.match(r"\[(.+)\]\s*--\((.+)\)", line)
     if m:
         logic_str, coil = m.groups()
-        return {"logic": logic_str.strip(), "coil": coil.strip()}
+        # 万が一末尾に余計な文字("や))が残っていても除去する
+        coil = coil.strip().replace(")","").replace('"', '')
+        return {"logic": logic_str.strip(), "coil": coil}
+
 
     m = re.match(r"(D\d+)\s*=\s*(D\d+)\s*([\+\-\*/])\s*(D\d+)", line)
     if m:
@@ -153,6 +161,9 @@ def load_ladder_yaml(filename):
         rung = parse_ladder_line(line)
         if rung:
             rungs.append(rung)
+        else:
+            # ラダーパースに失敗した行をコンソールに出力して気づけるようにする
+            print(f"[ERROR] Failed to parse ladder line: {line}")
     return rungs
 
 
@@ -363,6 +374,9 @@ class PLC:
 
     def run(self):
         self.log("PLC START")
+        print(self.ladder)
+        for idx, rung in enumerate(self.ladder):
+            print(f"{idx} / {rung}")
         try:
             while self.power:
                 self.scan()

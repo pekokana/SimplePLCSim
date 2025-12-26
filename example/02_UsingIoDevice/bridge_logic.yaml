@@ -11,5 +11,5 @@ connections:
 
   # 2. コンベアの「搬送完了出力(Y0)」を、プレス機の「搬送完了入力(X1)」へ転送
   - name: "transfer_cycle_complete"
-    trigger: {host: "localhost", port: 15020, address: 0,  type: "coil"} # PLC_Conv Y0
+    trigger: {host: "localhost", port: 15030, address: 0,  type: "coil"} # PLC_Conv Y0
     target:  {host: "localhost", port: 15030, address: 1,  type: "coil"} # PLC_Press X1

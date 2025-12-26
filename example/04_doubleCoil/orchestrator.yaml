@@ -1,0 +1,18 @@
+kind: orchestrator
+version: "1.0"
+log:
+  dir: "logs"
+
+services:
+  # 二重コイル検証用
+  - name: plc_d
+    type: plc
+    command: [plcsim.py]
+    args: ["example/04_doubleCoil/plc_double.yaml", "example/04_doubleCoil/ladder_double.yaml"]
+    ready_check: { kind: modbus, host: 127.0.0.1, port: 15050 }
+
+  - name: dev_d
+    type: device
+    command: [devicesim.py]
+    args: ["example/04_doubleCoil/device_double.yaml"]
+    depends_on: [plc_d]

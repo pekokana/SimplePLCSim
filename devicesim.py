@@ -29,8 +29,10 @@ class Logger:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         line = f"{now} | {msg}"
         print(line, flush=True)
-        self.fp.write(line + "\n")
-        self.fp.flush()
+        if self.fp:
+            self.fp.write(line + "\n")
+            self.fp.flush()
+            os.fsync(self.fp.fileno())
 
     def close(self):
         self.log("log file closed")
@@ -136,44 +138,52 @@ class DeviceSimulator:
     # PLC heartbeat check
     # -----------------------------
     def check_heartbeat(self):
-        rr = self.client.read_holding_registers(
-            address=self.HEARTBEAT_ADDR,
-            count=1
-        )
-
-        if not rr or rr.isError():
-            raise ModbusIOException("heartbeat read failed")
-
-        hb = rr.registers[0]
-
-        if self.last_heartbeat is None:
-            self.last_heartbeat = hb
-            self.last_hb_change = time.time()
-            return
-
-        if hb != self.last_heartbeat:
-            self.last_heartbeat = hb
-            self.last_hb_change = time.time()
-            return
-
-        if time.time() - self.last_hb_change > self.HEARTBEAT_TIMEOUT:
-            self.log(
-                f"[Device:{self.name}][FATAL] PLC heartbeat stopped "
-                f"(>{self.HEARTBEAT_TIMEOUT}s)"
+        try:
+            # address=10000 は PLC側の HR_SYS_BASE + 0 と一致させる
+            rr = self.client.read_holding_registers(
+                address=self.HEARTBEAT_ADDR,
+                count=1,
+                slave=1
             )
-            self.shutdown()
-            sys.exit(1)
+
+            if not rr or rr.isError():
+                # 起動直後はPLC側の準備ができていないことが多いため、WARNログに留めて return する
+                self.log(f"[Device:{self.name}][DEBUG] Heartbeat read failed (PLC not ready?)")
+                return 
+
+            hb = rr.registers[0]
+
+            if self.last_heartbeat is None:
+                self.last_heartbeat = hb
+                self.last_hb_change = time.time()
+                return
+
+            if hb != self.last_heartbeat:
+                self.last_heartbeat = hb
+                self.last_hb_change = time.time()
+                return
+
+            if time.time() - self.last_hb_change > self.HEARTBEAT_TIMEOUT:
+                self.log(f"[Device:{self.name}][FATAL] PLC heartbeat stopped (>{self.HEARTBEAT_TIMEOUT}s)")
+                self.shutdown()
+                sys.exit(1)
+        except Exception as e:
+            # 接続エラーなどは上位の handle_plc_error で処理されるため、ここではログのみ
+            self.log(f"[Device:{self.name}][DEBUG] Heartbeat exception: {e}")
 
     # -----------------------------
     # Main Loop
     # -----------------------------
     def run(self):
         self.log(f"[Device:{self.name}] START")
-
         try:
             while True:
                 try:
-                    # heartbeat 監視
+                    # 接続確認（切れていたら再接続）
+                    if not self.client.is_socket_open():
+                        self.connect_plc()
+
+                    # heartbeat 監視 (失敗しても即終了しないように内部で制御)
                     self.check_heartbeat()
 
                     for name, sig in self.signals.items():
@@ -183,13 +193,14 @@ class DeviceSimulator:
 
                 except (ModbusIOException, OSError, ConnectionError) as e:
                     self.handle_plc_error(e)
+                except Exception as e:
+                    self.log(f"[Device:{self.name}][ERROR] Unexpected error: {e}")
 
                 if time.time() - self.last_alive >= 5:
                     self.log(f"[Device:{self.name}] alive")
                     self.last_alive = time.time()
 
                 time.sleep(self.cycle)
-
         finally:
             self.shutdown()
 

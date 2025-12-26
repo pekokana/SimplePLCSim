@@ -1,0 +1,5 @@
+kind: ladder
+version: "1.0"
+rungs:
+  # 一度でも検知したら Y0 を自己保持して点灯し続ける
+  - "[ X0 OR Y0 ] --(Y0)"

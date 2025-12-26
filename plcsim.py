@@ -7,8 +7,8 @@ import os
 import re
 
 from collections import deque
-
 from modbus_server import ModbusBridge
+from ladder_compiler import LadderCompiler
 
 # -----------------------------
 # Logger
@@ -70,9 +70,9 @@ class Memory:
 
 
 # -----------------------------
-# 直感ラダー文字列 parser
+# 直感ラダー文字列 parser：旧正規表現版
 # -----------------------------
-def parse_ladder_line(line):
+def parse_ladder_line_old(line):
     line = line.strip()
 
     if line.startswith("END"):
@@ -149,7 +149,7 @@ def parse_ladder_line(line):
 # -----------------------------
 # ladder.yaml 読み込み
 # -----------------------------
-def load_ladder_yaml(filename):
+def load_ladder_yaml(filename, compiler):
     with open(filename, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
@@ -158,7 +158,7 @@ def load_ladder_yaml(filename):
 
     rungs = []
     for line in data.get("rungs", []):
-        rung = parse_ladder_line(line)
+        rung = compiler.compile_line(line)
         if rung:
             rungs.append(rung)
         else:
@@ -208,150 +208,73 @@ class PLC:
         self.last_alive = time.time()
 
     def scan(self):
-        # system heartbeat 更新
         self.mem.sys.heartbeat += 1
         self.mem.sys.scan_count += 1
 
         for idx, rung in enumerate(self.ladder):
-            t = rung.get("type")
-
-            if t == "END":
-                self.log(f"SCAN END at rung {idx}")
+            # 1. END命令の処理
+            if rung.get("type") == "END":
                 break
 
-            if t == "TON":
-                timer = rung["timer"]
-                enable = self.get_bit(rung["enable"])
-                preset = rung["preset"]
-                out_dev = rung["out"][0]
-                out_bit = int(rung["out"][1:])
+            # 2. 条件式の評価
+            # Compilerが生成した "self.mem.X[10]" 等の文字列を eval
+            logic_str = rung.get("logic")
+            condition_met = eval(logic_str) if logic_str else True
 
-                st = self.mem.T.setdefault(
-                    timer,
-                    {"acc": 0, "on": False}
-                )
+            # 3. 複数出力の実行
+            if "outputs" in rung:
+                outputs = rung["outputs"]
+                # 単一の辞書で届いた場合でもループ回るようにリスト化する
+                if isinstance(outputs, dict):
+                    outputs = [outputs]
 
-                if enable:
-                    st["acc"] += 1
-                    if st["acc"] >= preset:
-                        st["on"] = True
-                else:
-                    st["acc"] = 0
-                    st["on"] = False
+                for out in outputs:
+                    self.execute_output(out, condition_met, idx)
 
-                prev = getattr(self.mem, out_dev)[out_bit]
-                getattr(self.mem, out_dev)[out_bit] = st["on"]
+    def execute_output(self, out, en, rung_idx):
+        out_type = out["type"]
+        target = out.get("target") # "self.mem.Y[0]" などの文字列
 
-                if prev != st["on"]:
-                    self.log(
-                        f"[TON] {timer} acc={st['acc']} preset={preset} -> {rung['out']}={st['on']}"
-                    )
+        if out_type == "COIL":
+            # 文字列を eval して現在の値を取得
+            old_val = eval(target)
+            new_val = bool(en)
+            if old_val != new_val:
+                exec(f"{target} = {new_val}")
+                self.log(f"[LADDER] rung# {rung_idx}: {target} = {new_val}")
 
-                continue
+        elif out_type == "TON":
+            preset = out["preset"]
+            # target("self.mem.T[1]") をそのままキーにして状態管理
+            st = self.mem.T.setdefault(target, {"acc": 0, "on": False})
 
-            if t == "CTU":
-                counter = rung["counter"]
-                inp = self.get_bit(rung["input"])
-                preset = rung["preset"]
-                out = rung["out"]
-
-                st = self.mem.C.setdefault(
-                    counter,
-                    {"count": 0, "prev": False, "done": False}
-                )
-
-                if inp and not st["prev"]:
-                    st["count"] += 1
-                    if st["count"] >= preset:
-                        st["done"] = True
-
-                st["prev"] = inp
-
-                prev = self.get_bit(out)
-                self.set_bit(out, st["done"])
-
-                if prev != st["done"]:
-                    self.log(
-                        f"[CTU] {counter} count={st['count']} preset={preset} -> {out}={st['done']}"
-                    )
-
-                continue
-
-
-            if t == "TOF":
-                timer = rung["timer"]
-                enable = self.get_bit(rung["enable"])
-                preset = rung["preset"]
-                out_dev = rung["out"][0]
-                out_bit = int(rung["out"][1:])
-
-                st = self.mem.T.setdefault(
-                    timer,
-                    {"acc": 0, "on": False}
-                )
-
-                if enable:
+            prev_on = st["on"]
+            if en:
+                st["acc"] += (self.scan_cycle * 1000)
+                if st["acc"] >= preset:
                     st["on"] = True
-                    st["acc"] = preset
-                else:
-                    if st["acc"] > 0:
-                        st["acc"] -= 1
-                    else:
-                        st["on"] = False
+            else:
+                st["acc"] = 0
+                st["on"] = False
+            
+            # メモリ(self.mem.T[1])に状態を反映
+            exec(f"{target} = {st['on']}")
 
-                prev = getattr(self.mem, out_dev)[out_bit]
-                getattr(self.mem, out_dev)[out_bit] = st["on"]
+            if prev_on != st["on"]:
+                self.log(f"[TON] {target} turned {'ON' if st['on'] else 'OFF'} (acc={st['acc']})")
 
-                if prev != st["on"]:
-                    self.log(
-                        f"[TOF] {timer} acc={st['acc']} preset={preset} -> {rung['out']}={st['on']}"
-                    )
+        elif out_type == "RES":
+            if en:
+                # 文字列の中に "T[" が含まれているかどうかでデバイス種別を判定
+                if ".T[" in target:
+                    self.mem.T[target] = {"acc": 0, "on": False}
+                elif ".C[" in target:
+                    self.mem.C[target] = {"count": 0, "prev": False, "done": False}
+                
+                # 物理メモリの値もFalse(0)にリセット
+                exec(f"{target} = False")
+                self.log(f"[RES] {target} reset")
 
-                continue
-
-
-            if t == "RES":
-                target = rung["target"]
-
-                if target.startswith("T"):
-                    if target in self.mem.T:
-                        self.mem.T[target] = {
-                            "start": None,
-                            "done": False,
-                            "prev_enable": False
-                        }
-                        self.log(f"[RES] Timer {target} reset")
-
-                elif target.startswith("C"):
-                    if target in self.mem.C:
-                        self.mem.C[target] = {
-                            "count": 0,
-                            "prev": False,
-                            "done": False
-                        }
-                        self.log(f"[RES] Counter {target} reset")
-
-                continue
-
-
-            # 未実装検知
-            if t:
-                self.log(f"SCAN rung {idx}: type={t} (not implemented)")
-                continue
-
-            if "logic" in rung:
-                res = self.eval_logic(rung["logic"])
-                dev = rung["coil"][0]
-                bit = int(rung["coil"][1:])
-
-                old = getattr(self.mem, dev)[bit]
-                getattr(self.mem, dev)[bit] = res
-
-                if old != res:
-                    self.log(
-                        f"[LADDER] rung# {idx} "
-                        f"{rung['logic']} -> {rung['coil']} = {res}"
-                    )
 
     def get_bit(self, addr):
         dev = addr[0]
@@ -374,20 +297,16 @@ class PLC:
 
     def run(self):
         self.log("PLC START")
-        print(self.ladder)
+        # デバッグ用：パース済みラダーの表示
         for idx, rung in enumerate(self.ladder):
-            print(f"{idx} / {rung}")
+            print(f"Parsed {idx}: {rung}")
+
         try:
             while self.power:
                 self.scan()
-
                 if time.time() - self.last_alive > 5:
-                    self.log(
-                        f"PLC alive | hb={self.mem.sys.heartbeat} "
-                        f"uptime={self.mem.sys.uptime_sec}s"
-                    )
+                    self.log(f"PLC alive | hb={self.mem.sys.heartbeat} uptime={self.mem.sys.uptime_sec}s")
                     self.last_alive = time.time()
-
                 time.sleep(self.scan_cycle)
         finally:
             self.log("PLC STOP")
@@ -402,8 +321,11 @@ def main():
         print("Usage: python plcsim.py plc.yaml ladder.yaml")
         sys.exit(1)
 
+    # 1. コンパイラを先に作成
+    compiler = LadderCompiler()
+
     plc_conf = load_plc_yaml(sys.argv[1])
-    ladder_conf = load_ladder_yaml(sys.argv[2])
+    ladder_conf = load_ladder_yaml(sys.argv[2], compiler)
 
     plc = PLC(plc_conf, ladder_conf)
 

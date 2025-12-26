@@ -1,0 +1,20 @@
+kind: device
+version: "1.0"
+device:
+  name: "switch_unit"
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15050
+  cycle_ms: 100
+  signals:
+    sw_0_on:
+      type: coil
+      address: 0
+      pattern:
+        - { value: true, duration_ms: 1000 }
+    sw_1_off:
+      type: coil
+      address: 1
+      pattern:
+        - { value: false, duration_ms: 1000 } # 常にOFF

@@ -1,0 +1,16 @@
+kind: device
+version: "1.0"
+device:
+  name: "fast_sensor"
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15040
+  cycle_ms: 10
+  signals:
+    short_input:
+      type: coil
+      address: 0
+      pattern:
+        - { value: true,  duration_ms: 50 }   # 100msのスキャンより短い
+        - { value: false, duration_ms: 2000 }

@@ -31,7 +31,7 @@ services:
   # --- 神経: PLC間データブリッジ ---
   - name: bridge_logic
     type: iodevice  # ← ここが重要
-    command: [iodevice.py]
+    command: [iodevicesim.py]
     args: 
       - example/02_UsingIoDevice/bridge_logic.yaml
     depends_on: [plc_press, plc_conv]
@@ -39,7 +39,7 @@ services:
   # --- 体: プレス機の物理デバイス ---
   - name: press_sensor
     type: device
-    command: [device.py]
+    command: [devicesim.py]
     args: 
       - example/02_UsingIoDevice/device_press_sensor.yaml
     depends_on: [plc_press]

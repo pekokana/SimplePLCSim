@@ -174,7 +174,7 @@ def interactive_log_viewer(log_dir):
     except:
         print("[!] Invalid input.")
 
-def execute_chaos(subcmd, target, logger):
+def execute_chaos(subcmd, target, logger, args=None):
     global disabled_services
     with state_lock:
         if target not in svc_map:
@@ -214,9 +214,33 @@ def execute_chaos(subcmd, target, logger):
                     )
                     # 一度NOにしておけば、monitor_loopがModbus接続を確認してYESにしてくれます
                     svc_ready_status[target] = False
-
             else:
                 print(f"[!] {target} is not in disabled state.")
+
+        elif subcmd == "delay":
+            if not args or len(args) < 1:
+                print("Usage: chaos delay <service_name> <seconds>")
+                return
+            
+            try:
+                sec = int(args[0])
+                rc = svc.get("ready_check")
+                if rc and rc.get("kind") == "modbus":
+                    # Modbus経由で10005番(HR_SYS_BASE + 5)に書き込む
+                    client = ModbusTcpClient(rc["host"], port=rc["port"])
+                    if client.connect():
+                        # 10000 (Base) + 5 = 10005
+                        client.write_register(10005, sec)
+                        client.close()
+                        logger.log(f"Chaos: Injected {sec}s latency to {target}", console=True)
+                    else:
+                        print(f"[!] Could not connect to {target} to inject latency.")
+                else:
+                    print(f"[!] Service {target} does not support Modbus chaos injection.")
+            except ValueError:
+                print("[!] Latency must be an integer (seconds).")
+
+
 
 
 # -----------------------------
@@ -266,9 +290,9 @@ def main():
                 interactive_log_viewer(log_dir)
             elif cmd == "chaos":
                 if len(parts) < 3:
-                    print("Usage: chaos <kill|stop|resume> <service_name>")
+                    print("Usage: chaos <kill|stop|resume|delay> <service_name> [args]")
                 else:
-                    execute_chaos(parts[1], parts[2], logger)
+                    execute_chaos(parts[1], parts[2], logger, args=parts[3:])
             elif cmd in ["help", "?"]:
                 print("\nAvailable commands:")
                 print("  status (ls, ps)    : Show status of all services")
@@ -276,6 +300,7 @@ def main():
                 print("  chaos kill <name>  : Force kill a service (auto-restart enabled)")
                 print("  chaos stop <name>  : Stop a service and disable auto-restart")
                 print("  chaos resume <name>: Re-enable and start a stopped service")
+                print("  chaos delay <name> <sec> : Inject Modbus latency (0 to disable)")
                 print("  help (?)           : Show this help")
                 print("  exit (quit)        : Stop all services and exit\n")
             elif cmd in ["exit", "quit"]:

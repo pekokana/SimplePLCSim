@@ -6,9 +6,9 @@ power: true
 cpu:
   scan_cycle_ms: 100
 memory:
-  x: 100
-  y: 100
-  m: 1000
-  d: 1000
+  X: 100
+  Y: 100
+  M: 1000
+  D: 1000
 modbus:
   port: 15030

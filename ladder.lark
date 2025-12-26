@@ -1,0 +1,36 @@
+?start: rung
+
+?rung: logic_expr out_sequence    -> standard_rung
+     | "END"                      -> end_rung
+
+// --- 条件式 ---
+?logic_expr: logic_or
+?logic_or: logic_and ( "OR" logic_and )*
+?logic_and: logic_not ( "AND" logic_not )*
+?logic_not: "NOT" factor          -> op_not
+          | factor
+?factor: "[" logic_expr "]"       -> nested
+       | DEVICE                   -> device
+
+// --- 出力 ---
+// 出力が続く限り解析する
+?out_sequence: "--(" out_target ")" out_sequence?
+
+?out_target: DEVICE                    -> coil
+           | "RES" DEVICE              -> res_inst
+           | INST DEVICE NUMBER        -> timer_counter_inst
+           | calc_expr                 -> calc_inst
+
+// --- 演算 ---
+?calc_expr: DEVICE "=" DEVICE OP DEVICE -> op_math
+          | DEVICE "=" DEVICE           -> op_mov
+
+// --- トークン ---
+DEVICE: /[XYMTCID]\d+/
+INST: "TON" | "TOF" | "CTU"
+OP: "+" | "-" | "*" | "/"
+NUMBER: /\d+/
+
+// あらゆる場所の空白（改行、タブ、スペース）を自動的に無視する
+%import common.WS
+%ignore WS

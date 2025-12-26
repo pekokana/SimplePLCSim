@@ -14,12 +14,12 @@ import time
 class ChaosSlaveContext:
     """SlaveContextをラップし、値の取得・設定時に遅延を注入する"""
     def __init__(self, original_context, bridge):
-        self.original = original_context
-        self.bridge = bridge
+        # 内部プロパティへの直接アクセスで無限ループを防ぐため
+        # __setattr__ を介さずに設定
+        object.__setattr__(self, 'original', original_context)
+        object.__setattr__(self, 'bridge', bridge)
 
     def getValues(self, fc, address, count=1):
-        # 外部からのリクエスト（Orchestrator以外など）に対して遅延を発生させる
-        # sync_from_plc 内部からの呼び出しと区別するため、フラグを確認
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
         return self.original.getValues(fc, address, count)
@@ -29,8 +29,16 @@ class ChaosSlaveContext:
             time.sleep(self.bridge.latency_sec)
         self.original.setValues(fc, address, values)
 
-    def validate(self, fc, address, count=1):
-        return self.original.validate(fc, address, count)
+    # Pymodbus内部で期待される全メソッド/属性を original に転送する
+    def __getattr__(self, name):
+        return getattr(self.original, name)
+
+    def __setattr__(self, name, value):
+        # originalの属性を更新しようとした場合も転送する
+        if name in ('original', 'bridge'):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.original, name, value)
 
 class ChaosServerContext:
     """ModbusServerContextをラップし、ChaosSlaveContextを返す"""
@@ -55,141 +63,96 @@ class ModbusBridge:
         self.debug = debug
         self.log = plc.log
 
-        # --- Chaos Flag ---
-        self.latency_sec = 0  # 遅延時間（秒）。0なら遅延なし
+        self.latency_sec = 0  
+        self._first_input = True
 
-        self.log(f"[Modbus] server init port={port}")
+        # --- アドレスマップの定義 (ここを基準にすべて自動計算される) ---
+        self.ADDR_Y_START = 0      # Y (Coil) は 0 から開始
+        self.ADDR_M_START = 1000   # M (Coil) は 1000 から開始 (干渉防止)
+        self.ADDR_D_START = 0      # D (Register) は 0 から開始
+        self.HR_SYS_BASE  = 10000  # システム情報は 10000 から開始
 
-        # -------------------------------------------------
-        # Holding Register を拡張（system 用を含む）
-        # -------------------------------------------------
-        self.HR_USER_SIZE = 100           # D レジスタ用
-        self.HR_SYS_BASE = 10000          # system register base
-        self.HR_SYS_SIZE = 10             # 余裕を持たせる
+        # --- 重要：PLCの実体メモリからサイズを自動取得する ---
+        x_count = len(self.plc.mem.X)  # 例: 100
+        y_count = len(self.plc.mem.Y)  # 例: 100
+        m_count = len(self.plc.mem.M)  # 例: 1000
+        d_count = len(self.plc.mem.D)  # 例: 1000
 
+        self.log(f"[Modbus] server init: X={x_count}, Y={y_count}, M={m_count}, D={d_count}")
+
+        # --- 名簿（データブロック）のサイズ計算 ---
+        # 必要な長さは「開始アドレス + 実際の個数」
+        co_size = self.ADDR_M_START + m_count 
+        hr_size = self.HR_SYS_BASE + 20 # システム領域分を確保
+
+        # --- 受付名簿（データブロック）の作成 ---
         device = ModbusDeviceContext(
-            di=ModbusSequentialDataBlock(0, [0] * 100),   # X
-            co=ModbusSequentialDataBlock(0, [0] * 100),   # Y/M
-            hr=ModbusSequentialDataBlock(
-                0,
-                [0] * (self.HR_USER_SIZE + self.HR_SYS_BASE + self.HR_SYS_SIZE)
-            ),
+            di=ModbusSequentialDataBlock(0, [0] * x_count), # X用 (FC2)
+            co=ModbusSequentialDataBlock(0, [0] * co_size), # Y, M用 (FC1)
+            hr=ModbusSequentialDataBlock(0, [0] * hr_size), # D, Sys用 (FC3)
         )
 
-        # self.context = ModbusServerContext(devices=device, single=True)
-
-        # オリジナルのコンテキストを作成し、Chaosコンテキストでラップする
+        # あとは共通
         raw_context = ModbusServerContext(devices=device, single=True)
         self.context = ChaosServerContext(raw_context, self)
-
         self._first_input = True
+
 
     # -------------------------------------------------
     # PLC <-> Modbus 同期
     # -------------------------------------------------
     def sync_from_plc(self):
         self.log("[Modbus] sync thread started")
-
-        # 内部同期用のアクセスでは遅延させないため、一時的にコンテキストを直接参照する
-        # (self.context.original を使って遅延をバイパス)
+        # 内部同期は遅延させないため original を直接使う
         raw_slave_context = self.context.original[0]
 
         while True:
             try:
-                # ---------- X ← Client ----------
-                x_values = raw_slave_context.getValues(1, 0, count=len(self.plc.mem.X))
+                # ---------- 1. カオス設定の読み取り ----------
+                # HR 10005 を遅延設定用に使用。ここを外部(Python等)から書き換えると遅延が始まる
+                chaos_res = raw_slave_context.getValues(3, self.HR_SYS_BASE + 5, count=1)
+                if isinstance(chaos_res, list):
+                    new_latency = chaos_res[0]
+                    if new_latency != self.latency_sec:
+                        self.latency_sec = new_latency
+                        if self.latency_sec > 0:
+                            self.log(f"!!! [CHAOS] Latency Mode Active: {self.latency_sec}s !!!")
+                        else:
+                            self.log("[CHAOS] Latency Mode Disabled")
 
-                if self._first_input and any(x_values):
-                    self.log(f"[Modbus] first input detected X={x_values}")
-                    self._first_input = False
+                # ---------- 2. X ← Client (FC2) ----------
+                res = raw_slave_context.getValues(2, 0, count=len(self.plc.mem.X))
+                if isinstance(res, list):
+                    for i, v in enumerate(res):
+                        if i < len(self.plc.mem.X):
+                            self.plc.mem.X[i] = bool(v)
 
-                for i, v in enumerate(x_values):
-                    self.plc.mem.X[i] = bool(v)
-
-                # ---------- Y → Coil 20 ----------
+                # ---------- 3. Y/M/D 送信処理 ----------
+                # 定義した START アドレスを基準にループ
+                # Y (Coil 0〜)
                 for i, v in enumerate(self.plc.mem.Y):
-                    raw_slave_context.setValues(1, 20 + i, [int(v)])
-
-                # ---------- M → Coil 40 ----------
+                    raw_slave_context.setValues(1, self.ADDR_Y_START + i, [int(v)])
+                
+                # M (Coil 1000〜)
                 for i, v in enumerate(self.plc.mem.M):
-                    raw_slave_context.setValues(1, 40 + i, [int(v)])
-
-                # ---------- D → HR 0 ----------
+                    raw_slave_context.setValues(1, self.ADDR_M_START + i, [int(v)])
+                
+                # D (HR 0〜)
                 for i, v in enumerate(self.plc.mem.D):
-                    raw_slave_context.setValues(3, i, [int(v)])
-
-                # --- システムレジスタの同期 ---
+                    raw_slave_context.setValues(3, self.ADDR_D_START + i, [int(v)])
+                    
+                # ---------- 4. システムレジスタ更新 ----------
                 sys = self.plc.mem.sys
                 raw_slave_context.setValues(3, self.HR_SYS_BASE + 0, [sys.heartbeat])
                 raw_slave_context.setValues(3, self.HR_SYS_BASE + 1, [sys.scan_count & 0xFFFF])
                 raw_slave_context.setValues(3, self.HR_SYS_BASE + 2, [sys.uptime_sec])
 
-                # --- カオス設定の読み取り (HR 10005 を遅延設定用に使用) ---
-                # Orchestratorなどのクライアントがこのアドレスに数値を書き込むことで遅延を操作できる
-                chaos_val = raw_slave_context.getValues(3, self.HR_SYS_BASE + 5, count=1)[0]
-                if chaos_val != self.latency_sec:
-                    self.latency_sec = chaos_val
-                    if self.latency_sec > 0:
-                        self.log(f"[Modbus][CHAOS] Latency injected: {self.latency_sec}s")
-                    else:
-                        self.log(f"[Modbus][CHAOS] Latency removed")
-
-                if self.debug:
-                    self.log("[Modbus][debug] sync done")
-
                 time.sleep(0.1)
 
             except Exception as e:
-                self.log(f"[Modbus][ERROR] {e}")
+                import traceback
+                self.log(f"[Modbus][ERROR] {e}\n{traceback.format_exc()}")
                 time.sleep(1)
-
-            #     # ---------- X ← Client ----------
-            #     x_values = self.context[0].getValues(
-            #         1, 0, count=len(self.plc.mem.X)
-            #     )
-
-            #     if self._first_input and any(x_values):
-            #         self.log(f"[Modbus] first input detected X={x_values}")
-            #         self._first_input = False
-
-            #     for i, v in enumerate(x_values):
-            #         self.plc.mem.X[i] = bool(v)
-
-            #     # ---------- Y → Coil 20 ----------
-            #     for i, v in enumerate(self.plc.mem.Y):
-            #         self.context[0].setValues(1, 20 + i, [int(v)])
-
-            #     # ---------- M → Coil 40 ----------
-            #     for i, v in enumerate(self.plc.mem.M):
-            #         self.context[0].setValues(1, 40 + i, [int(v)])
-
-            #     # ---------- D → HR 0 ----------
-            #     for i, v in enumerate(self.plc.mem.D):
-            #         self.context[0].setValues(3, i, [int(v)])
-
-            #     # -------------------------------------------------
-            #     # system register → HR 10000〜
-            #     # -------------------------------------------------
-            #     sys = self.plc.mem.sys
-
-            #     self.context[0].setValues(
-            #         3, self.HR_SYS_BASE + 0, [sys.heartbeat]
-            #     )
-            #     self.context[0].setValues(
-            #         3, self.HR_SYS_BASE + 1, [sys.scan_count & 0xFFFF]
-            #     )
-            #     self.context[0].setValues(
-            #         3, self.HR_SYS_BASE + 2, [sys.uptime_sec]
-            #     )
-
-            #     if self.debug:
-            #         self.log("[Modbus][debug] sync done")
-
-            #     time.sleep(0.1)
-
-            # except Exception as e:
-            #     self.log(f"[Modbus][ERROR] {e}")
-            #     time.sleep(1)
 
     # -------------------------------------------------
     # Start Server
@@ -197,6 +160,6 @@ class ModbusBridge:
     def start(self):
         self.log(f"[Modbus] server START port={self.port}")
         threading.Thread(target=self.sync_from_plc, daemon=True).start()
-        # StartTcpServer(self.context, address=("0.0.0.0", self.port))
         # self.context (Chaosラップ済み) をサーバーに渡す
-        StartTcpServer(self.context.original, address=("0.0.0.0", self.port))
+        # StartTcpServer(self.context.original, address=("0.0.0.0", self.port))
+        StartTcpServer(self.context, address=("0.0.0.0", self.port))

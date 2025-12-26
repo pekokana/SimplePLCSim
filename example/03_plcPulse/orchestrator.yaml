@@ -1,0 +1,24 @@
+kind: orchestrator
+version: "1.0"
+log:
+  dir: "logs"
+
+services:
+  # パルス検証用
+  - name: plc_p
+    type: plc
+    command: [plcsim.py]
+    args:
+      - "example/03_plcPulse/plc_pulse.yaml"
+      - "example/03_plcPulse/ladder_pulse.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15040
+
+  - name: dev_p
+    type: device
+    command: [devicesim.py]
+    args: 
+      - "example/03_plcPulse/device_pulse.yaml"
+    depends_on: [plc_p]

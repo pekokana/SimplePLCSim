@@ -10,7 +10,13 @@
 ?logic_not: "NOT" factor          -> op_not
           | factor
 ?factor: "[" logic_expr "]"       -> nested
+       | comparison                // D0 < 100 などを評価可能とするため
        | DEVICE                   -> device
+       | "TRUE"                   -> const_true
+       | "FALSE"                  -> const_false
+
+?comparison: (DEVICE | NUMBER) COMP_OP (DEVICE | NUMBER) -> op_compare
+COMP_OP: "==" | "!=" | ">=" | "<=" | ">" | "<"
 
 // --- 出力 ---
 // 出力が続く限り解析する
@@ -22,8 +28,12 @@
            | calc_expr                 -> calc_inst
 
 // --- 演算 ---
-?calc_expr: DEVICE "=" DEVICE OP DEVICE -> op_math
-          | DEVICE "=" DEVICE           -> op_mov
+//?calc_expr: DEVICE "=" DEVICE OP DEVICE -> op_math
+//          | DEVICE "=" DEVICE           -> op_mov
+?calc_expr: DEVICE "=" math_expr
+?math_expr: term (OP term)*
+?term: DEVICE | NUMBER
+
 
 // --- トークン ---
 DEVICE: /[XYMTCID]\d+/

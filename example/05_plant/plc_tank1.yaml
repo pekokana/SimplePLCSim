@@ -1,0 +1,14 @@
+kind: plc
+vertion: "1.0"
+name: "plc_tank1"
+log_dir: logs
+power: true
+cpu:
+  scan_cycle_ms: 100
+memory:
+  X: 10  # 外部操作スイッチ（給液開始など）
+  Y: 10  # 供給バルブ状態
+  M: 100 # アラームフラグ (M100: 燃料不足, M101: 薬品不足)
+  D: 100 # D0:燃料タンク1, D1:燃料タンク2, D2:薬品タンク1, D3:薬品タンク2
+modbus:
+  port: 15020

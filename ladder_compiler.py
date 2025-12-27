@@ -60,13 +60,43 @@ class LadderTransformer(Transformer):
                 res.append(next_items)  # 単体ならそのまま追加
         return res
 
-
     def standard_rung(self, items):
         # 最終的なロジック文字列をここで確定
         return {"logic": self._transform_device(items[0]), "outputs": items[1]}
 
     def end_rung(self, _):
         return {"type": "END"}
+
+    # 比較演算 [ C0 < 100 ] の評価
+    def op_compare(self, items):
+        # items: [左辺, 演算子, 右辺]
+        left = self._transform_device(items[0])
+        op = str(items[1])
+        # 右辺がデバイスならメモリ参照、数字ならそのまま
+        right = self._transform_device(items[2]) if hasattr(items[2], 'type') and items[2].type == 'DEVICE' else str(items[2])
+        return f"({left} {op} {right})"
+
+    # 代入・計算命令 --(D0 = D1 + 1)
+    def calc_inst(self, items):
+        # items[0]はcalc_expr(文字列)
+        return {"type": "CALC", "formula": items[0]}
+
+    def op_math(self, items):
+        # DEVICE "=" DEVICE OP DEVICE -> D0 = D1 + 10
+        target = self._transform_device(items[0])
+        left = self._transform_device(items[1])
+        op = str(items[2])
+        right = self._transform_device(items[3]) if hasattr(items[3], 'type') and items[3].type == 'DEVICE' else str(items[3])
+        return f"{target} = {left} {op} {right}"
+
+    def op_mov(self, items):
+        # DEVICE "=" DEVICE -> D0 = D1
+        target = self._transform_device(items[0])
+        source = self._transform_device(items[1]) if hasattr(items[1], 'type') and items[1].type == 'DEVICE' else str(items[1])
+        return f"{target} = {source}"
+
+    def const_true(self, _): return "True"
+    def const_false(self, _): return "False"
 
 class LadderCompiler:
     def __init__(self):

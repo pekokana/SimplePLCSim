@@ -4,13 +4,189 @@ log:
   dir: "logs"
 services:
   # ---燃料タンク01 ---
-  - name: plc_tank01
+  - name: plc_fuel1
     type: plc
     command: [plcsim.py]
     args: 
-      - "example/05_plant/plc_tank1.yaml"
-      - "example/05_plant/ladder_tank1.yaml"
+      - "example/05_plant/plc_fuel1.yaml"
+      - "example/05_plant/ladder_fuel1.yaml"
     ready_check:
       kind: modbus
       host: 127.0.0.1
       port: 15020
+  # ---燃料タンク02 ---
+  - name: plc_fuel2
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_fuel2.yaml"
+      - "example/05_plant/ladder_fuel2.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15021
+  # ---薬品タンク01 ---
+  - name: plc_chem1
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_chem1.yaml"
+      - "example/05_plant/ladder_chem1.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15022
+  # ---薬品タンク02 ---
+  - name: plc_chem2
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_chem2.yaml"
+      - "example/05_plant/ladder_chem2.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15023
+  # ■■■　移送層
+  # ---送信機器01 ---
+  - name: plc_transfer1
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_transfer1.yaml"
+      - "example/05_plant/ladder_transfer1.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15024
+  # ---送信機器02 ---
+  - name: plc_transfer2
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_transfer2.yaml"
+      - "example/05_plant/ladder_transfer2.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15025
+  # ---移送デバイス01
+  - name: dev_transfer1
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_transfer1.yaml"]
+    depends_on: [plc_transfer1]
+  # ---移送デバイス02
+  - name: dev_transfer2
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_transfer2.yaml"]
+    depends_on: [plc_transfer2]
+
+  # ■■■　加工層
+  # ---加工機01 ---
+  - name: plc_process1
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_process1.yaml"
+      - "example/05_plant/ladder_process1.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15026
+  # ---加工デバイス01
+  - name: dev_process1
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_process1.yaml"]
+    depends_on: [plc_process1]
+  # ---加工機02 ---
+  - name: plc_process2
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_process2.yaml"
+      - "example/05_plant/ladder_process2.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15027
+  # ---加工デバイス02
+  - name: dev_process2
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_process2.yaml"]
+    depends_on: [plc_process2]
+
+  # ■■■　成形層
+  # ---成形機01 ---
+  - name: plc_molding1
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_molding1.yaml"
+      - "example/05_plant/ladder_molding1.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15028
+  # ---成形デバイス01
+  - name: molding_machine_1
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_molding1.yaml"]
+    depends_on: [plc_molding1]
+  # ---成形機02 ---
+  - name: plc_molding2
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_molding2.yaml"
+      - "example/05_plant/ladder_molding2.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15029
+  # ---成形デバイス02
+  - name: molding_machine_2
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_molding2.yaml"]
+    depends_on: [plc_molding2]
+
+  # ■■■　梱包層
+  # ---成形機01 ---
+  - name: plc_packing1
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_packing1.yaml"
+      - "example/05_plant/ladder_packing1.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15030
+  # ---成形デバイス01
+  - name: packing_machine_1
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_packing1.yaml"]
+    depends_on: [plc_packing1]
+  # ---成形機02 ---
+  - name: plc_packing2
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_packing2.yaml"
+      - "example/05_plant/ladder_packing2.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15031
+  # ---成形デバイス01
+  - name: packing_machine_2
+    type: device
+    command: [devicesim.py]
+    args: ["example/05_plant/device_packing2.yaml"]
+    depends_on: [plc_packing2]

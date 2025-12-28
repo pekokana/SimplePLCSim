@@ -1,0 +1,23 @@
+kind: device
+version: "1.0"
+device:
+  name: "transfer_unit_1"
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15024
+  cycle_ms: 100
+  signals:
+    # 燃料/薬品が送れる状態(X0)をシミュレート
+    upstream_ready:
+      type: coil
+      address: 0
+      pattern:
+        - { value: true, duration_ms: 5000 }
+        - { value: false, duration_ms: 2000 }
+    # 加工層が受け入れられる状態(X1)をシミュレート
+    downstream_ready:
+      type: coil
+      address: 1
+      pattern:
+        - { value: true, duration_ms: 10000 } # 常に受け入れ可能と想定

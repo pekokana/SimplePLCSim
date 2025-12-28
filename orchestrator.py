@@ -137,7 +137,7 @@ def monitor_loop(logger, start_order):
 # -----------------------------
 def show_status(start_order):
     print("\n" + "="*75)
-    print(f"{'SERVICE NAME':<15} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY'}")
+    print(f"{'SERVICE NAME':<25} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY'}")
     print("-" * 75)
     with state_lock:
         for svc in start_order:
@@ -147,7 +147,7 @@ def show_status(start_order):
             is_alive = p.poll() is None if p else False
             status = "Running" if is_alive else "Stopped"
             ready = "YES" if svc_ready_status.get(name) else "NO"
-            print(f"{name:<15} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready}")
+            print(f"{name:<25} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready}")
     print("="*75 + "\n")
 
 def interactive_log_viewer(log_dir):

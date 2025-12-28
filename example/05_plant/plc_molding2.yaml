@@ -1,0 +1,14 @@
+kind: plc
+version: "1.0"
+name: "plc_molding2"
+log_dir: logs
+power: true
+cpu:
+  scan_cycle_ms: 100
+memory:
+  X: 10   # X0: 加工完了ワーク到着, X1: 型開閉リミットスイッチ
+  Y: 10   # Y0: プレス降下(型締め), Y1: 製品押し出し(エジェクト)
+  M: 100  # M0: 成形サイクル動作中
+  D: 100  # D0: プレス圧力値監視
+modbus:
+  port: 15029

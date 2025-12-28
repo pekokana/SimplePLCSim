@@ -1,0 +1,25 @@
+kind: device
+version: "1.0"
+device:
+  name: "process_machine_1"
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15026
+  cycle_ms: 100
+  signals:
+    # 移送層からのワーク到着(X0)をシミュレート
+    work_ready:
+      type: coil
+      address: 0
+      pattern:
+        - { value: true, duration_ms: 5000 }
+        - { value: false, duration_ms: 15000 }
+    # 反応炉の温度(D0)の変化をシミュレート
+    temp_sensor:
+      type: register
+      address: 0
+      pattern:
+        - { value: 20, duration_ms: 5000 }  # 最初は常温
+        - { value: 45, duration_ms: 3000 }  # 上昇中
+        - { value: 82, duration_ms: 10000}  # 目標温度到達

@@ -142,8 +142,7 @@ class DeviceSimulator:
             # address=10000 は PLC側の HR_SYS_BASE + 0 と一致させる
             rr = self.client.read_holding_registers(
                 address=self.HEARTBEAT_ADDR,
-                count=1,
-                slave=1
+                count=1
             )
 
             if not rr or rr.isError():
@@ -220,7 +219,9 @@ class DeviceSimulator:
     def process_signal(self, name, sig):
         typ = sig["type"]
 
-        if typ == "coil":
+        if typ == "discrete":
+            self.run_pattern(name, sig, is_discrete=True)
+        elif typ == "coil":
             self.run_pattern(name, sig, coil=True)
         elif typ == "register":
             self.run_pattern(name, sig, register=True)
@@ -229,7 +230,7 @@ class DeviceSimulator:
         else:
             raise ValueError(f"unknown signal type: {typ}")
 
-    def run_pattern(self, name, sig, coil=False, register=False):
+    def run_pattern(self, name, sig, coil=False, register=False, is_discrete=False):
         if "_idx" not in sig:
             sig["_idx"] = 0
             sig["_next"] = time.time()
@@ -241,7 +242,13 @@ class DeviceSimulator:
             value = step["value"]
 
             if sig["_last"] != value:
-                if coil:
+                addr = sig["address"]
+                if is_discrete:
+                    # Discrete Input 領域(X)への書き込みとして命令を発行する
+                    # modbusサーバ側でこれが Xへの入力だと判別できるようにする
+                    self.client.write_coil(addr, value)
+                    self.log(f"[{self.name}] {name} (DI-Injected) -> X{addr} = {value}")
+                elif coil:
                     self.client.write_coil(addr, value)
                     self.log(f"[{self.name}] {name} -> X{addr} = {value}")
                 elif register:

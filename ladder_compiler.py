@@ -81,6 +81,32 @@ class LadderTransformer(Transformer):
         # items[0]はcalc_expr(文字列)
         return {"type": "CALC", "formula": items[0]}
 
+    def calc_expr(self, items):
+        # DEVICE "=" math_expr
+        target = self._transform_device(items[0])
+        expression = items[1]
+        return f"{target} = {expression}"
+
+    def math_expr(self, items):
+        # term (OP term)*
+        # items は [左辺, 演算子, 右辺, 演算子, ...] のリストになる
+        res = []
+        for i in items:
+            if isinstance(i, Token) and i.type == 'OP':
+                res.append(str(i))
+            else:
+                # term (DEVICE or NUMBER) を変換
+                res.append(self._transform_device(i))
+        return " ".join(res)
+
+    def term(self, items):
+        return items[0] # DEVICE or NUMBER
+
+    def calc_inst(self, items):
+        # items[0] は calc_expr で生成された文字列 "self.mem.D[0] = ..."
+        return {"type": "CALC", "formula": items[0]}
+
+
     def op_math(self, items):
         # DEVICE "=" DEVICE OP DEVICE -> D0 = D1 + 10
         target = self._transform_device(items[0])

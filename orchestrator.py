@@ -132,13 +132,148 @@ def monitor_loop(logger, start_order):
 
         time.sleep(2)
 
+# 指定されたPLCのアドレス空間を表示
+def show_specific_plc_map(target_name):
+    """特定のPLCサービスのアドレス詳細を表示する"""
+    with state_lock:
+        if target_name not in svc_map:
+            print(f"[!] Service '{target_name}' not found.")
+            return
+
+        svc = svc_map[target_name]
+        plc_conf_path = None
+        for arg in svc.get("args", []):
+            if arg.endswith(".yaml") and ("plc" in arg or "config" in arg):
+                plc_conf_path = arg
+                break
+        
+        if not plc_conf_path or not os.path.exists(plc_conf_path):
+            print(f"[!] Could not find PLC config file for {target_name}.")
+            return
+
+        try:
+            with open(plc_conf_path, "r", encoding="utf-8") as f:
+                p_conf = yaml.safe_load(f)
+            
+            m = p_conf.get("memory", {})
+            x_cnt, y_cnt, m_cnt, d_cnt = m.get("X", 0), m.get("Y", 0), m.get("M", 0), m.get("D", 0)
+
+            # ModbusBridgeの定数
+            ADDR_Y_START = 0
+            ADDR_M_START = 1000
+            ADDR_D_START = 0
+            HR_SYS_BASE  = 10000
+
+            print(f"\n--- Modbus Address Map for: {target_name} ({plc_conf_path}) ---")
+            print(f"{'PLC Dev':<15} | {'Modbus Type':<18} | {'Address Range':<15} | {'Function Code'}")
+            print("-" * 65)
+
+            # X: Discrete Inputs (FC2)
+            if x_cnt > 0:
+                print(f"X0-X{x_cnt-1:<3} | Discrete Input    | 0 - {x_cnt-1:<10} | FC2 (Read Input Status)")
+
+            # Y: Coils (FC1/5/15)
+            if y_cnt > 0:
+                y_end = ADDR_Y_START + y_cnt - 1
+                print(f"Y0-Y{y_cnt-1:<3} | Coil (Output)     | {ADDR_Y_START} - {y_end:<10} | FC1/5/15 (Coils)")
+
+            # M: Coils (FC1/5/15)
+            if m_cnt > 0:
+                m_end = ADDR_M_START + m_cnt - 1
+                print(f"M0-M{m_cnt-1:<3} | Coil (Internal)   | {ADDR_M_START} - {m_end:<10} | FC1/5/15 (Coils)")
+
+            # D: Holding Registers (FC3/6/16)
+            if d_cnt > 0:
+                d_end = ADDR_D_START + d_cnt - 1
+                print(f"D0-D{d_cnt-1:<3} | Holding Register  | {ADDR_D_START} - {d_end:<10} | FC3/6/16 (Registers)")
+
+            # System
+            print(f"SYS      | System Heartbeat  | {HR_SYS_BASE:<12} | FC3 (Read Only)")
+            print(f"SYS      | Chaos Latency (s) | {HR_SYS_BASE+5:<12} | FC3/6 (Read/Write)")
+            print("-" * 65)
+            print(f"Note: M (Internal Relay) starts from offset {ADDR_M_START} to avoid overlap with Y.")
+            print(f"Note: System Diagnostics area starts from {HR_SYS_BASE}.\n")
+
+        except Exception as e:
+            print(f"[!] Error parsing PLC config: {e}")
+
+# -----------------------------
+# CLI Functions (Memory Inspection)
+# -----------------------------
+def show_plc_memory_status(target_name):
+    with state_lock:
+        if target_name not in svc_map:
+            print(f"[!] Service '{target_name}' not found.")
+            return
+        
+        svc = svc_map[target_name]
+        rc = svc.get("ready_check")
+        if not rc or rc.get("kind") != "modbus":
+            print(f"[!] No Modbus config for {target_name}.")
+            return
+
+        plc_conf_path = next((arg for arg in svc.get("args", []) if "plc" in arg), None)
+        try:
+            with open(plc_conf_path, "r", encoding="utf-8") as f:
+                p_conf = yaml.safe_load(f)
+            m_limits = p_conf.get("memory", {})
+            print(f"m_limits info:{m_limits}")
+            
+            client = ModbusTcpClient(rc["host"], port=rc["port"], timeout=2)
+            if not client.connect():
+                print(f"[!] Could not connect to {target_name} on port {rc['port']}.")
+                return
+
+            print(f"\n--- [ {target_name.upper()} ] Current Values ---")
+
+            # 引数を (address, count, slave=1) の形式に統一します
+            # slave=1 はデフォルトですが、明示的にキーワード指定することでエラーを回避します
+
+            # 1. X (Discrete Inputs) - FC2
+            x_cnt = m_limits.get("X", 0)
+            if x_cnt > 0:
+                res = client.read_discrete_inputs(address=0, count=x_cnt)
+                print(f"  X (Inputs) afterclient.read_discrete_inputs : {res}")
+                if not res.isError():
+                    # pymodbus 3.xでは res.bits が直接リストとして扱えます
+                    print(f"  X (Inputs)  : {[1 if b else 0 for b in res.bits[:x_cnt]]}")
+
+            # 2. Y (Coils) - FC1
+            y_cnt = m_limits.get("Y", 0)
+            if y_cnt > 0:
+                res = client.read_coils(address=0, count=y_cnt)
+                if not res.isError():
+                    print(f"  Y (Outputs) : {[1 if b else 0 for b in res.bits[:y_cnt]]}")
+
+            # 3. M (Internal Relays) - FC1 (Offset 1000)
+            m_cnt = m_limits.get("M", 0)
+            if m_cnt > 0:
+                res = client.read_coils(address=1000, count=m_cnt)
+                # print(f"  3. M (Internal Relays) client.read_coils(address=1000, count=m_cnt) : {res}")
+                if not res.isError():
+                    print(f"  M (Internal): {[1 if b else 0 for b in res.bits[:m_cnt]]}")
+
+            # 4. D (Data Registers) - FC3
+            d_cnt = m_limits.get("D", 0)
+            if d_cnt > 0:
+                res = client.read_holding_registers(address=0, count=d_cnt)
+                if not res.isError():
+                    print(f"  D (Registers): {res.registers[:d_cnt]}")
+
+            client.close()
+            print("-" * 40 + "\n")
+
+        except Exception as e:
+            print(f"[!] Error: {e}")
+
+
 # -----------------------------
 # CLI Functions (All Features)
 # -----------------------------
 def show_status(start_order):
-    print("\n" + "="*75)
-    print(f"{'SERVICE NAME':<25} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY'}")
-    print("-" * 75)
+    print("\n" + "="*90)
+    print(f"{'SERVICE NAME':<25} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY':<10} | {'MBUS-PORT':<15}")
+    print("-" * 90)
     with state_lock:
         for svc in start_order:
             name = svc["name"]
@@ -147,8 +282,9 @@ def show_status(start_order):
             is_alive = p.poll() is None if p else False
             status = "Running" if is_alive else "Stopped"
             ready = "YES" if svc_ready_status.get(name) else "NO"
-            print(f"{name:<25} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready}")
-    print("="*75 + "\n")
+            mbusport = svc["ready_check"]["port"] if svc['type'] == "plc" else "---"
+            print(f"{name:<25} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready:<10} | {mbusport}")
+    print("="*90 + "\n")
 
 def interactive_log_viewer(log_dir):
     search_pattern = os.path.join(log_dir, "*.log")
@@ -241,8 +377,6 @@ def execute_chaos(subcmd, target, logger, args=None):
                 print("[!] Latency must be an integer (seconds).")
 
 
-
-
 # -----------------------------
 # Main Loop
 # -----------------------------
@@ -293,9 +427,21 @@ def main():
                     print("Usage: chaos <kill|stop|resume|delay> <service_name> [args]")
                 else:
                     execute_chaos(parts[1], parts[2], logger, args=parts[3:])
+            elif cmd == "addr":
+                if len(parts) < 2:
+                    print("Usage: addr <plc_service_name>")
+                else:
+                    show_specific_plc_map(parts[1])
+            elif cmd == "info":
+                if len(parts) < 2:
+                    print("Usage: info <plc_service_name>")
+                else:
+                    show_plc_memory_status(parts[1])
             elif cmd in ["help", "?"]:
                 print("\nAvailable commands:")
                 print("  status (ls, ps)    : Show status of all services")
+                print("  addr <name>        : Show Modbus address map for a specific PLC")
+                print("  info <name>        : Show real-time memory value (Modbus Read)")
                 print("  log                : Open interactive log viewer")
                 print("  chaos kill <name>  : Force kill a service (auto-restart enabled)")
                 print("  chaos stop <name>  : Stop a service and disable auto-restart")

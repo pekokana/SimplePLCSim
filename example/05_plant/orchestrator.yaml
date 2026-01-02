@@ -34,16 +34,25 @@ services:
   #     host: 127.0.0.1
   #     port: 15021
   # ---薬品タンク01 ---
-  # - name: plc_chem1
-  #   type: plc
-  #   command: [plcsim.py]
-  #   args: 
-  #     - "example/05_plant/plc_chem1.yaml"
-  #     - "example/05_plant/ladder_chem1.yaml"
-  #   ready_check:
-  #     kind: modbus
-  #     host: 127.0.0.1
-  #     port: 15022
+  - name: plc_chem1
+    type: plc
+    command: [plcsim.py]
+    args: 
+      - "example/05_plant/plc_chem1.yaml"
+      - "example/05_plant/ladder_chem1.yaml"
+    ready_check:
+      kind: modbus
+      host: 127.0.0.1
+      port: 15022
+
+  # --- 神経: PLC間データブリッジ ---
+  - name: bridge_fuel_to_transfer
+    type: iodevice  # ← ここが重要
+    command: [iodevicesim.py]
+    args: 
+      - example/05_plant/iodevice_fuel1_to_transfer1.yaml
+    depends_on: [plc_chem1, plc_fuel1]
+
   # # ---薬品タンク02 ---
   # - name: plc_chem2
   #   type: plc

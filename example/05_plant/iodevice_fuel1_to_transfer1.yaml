@@ -1,0 +1,46 @@
+kind: iodevice
+version: "1.0"
+name: "bridge_fuel_to_transfer"
+cycle_ms: 200
+log_dir: "logs"
+connections:
+  # ルール1: fuel1の液位不足(M10)を transfer1の開始条件(X0)にコピー
+  - name: "sync_alarm_to_start"
+    trigger:
+      host: "localhost"
+      port: 15020
+      address: 1010  # M10 (1000 + 10) ※サーバー開始アドレス1の場合
+      type: "coil"
+    target:
+      host: "localhost"
+      port: 15022
+      address: 0     # X0
+      type: "discrete"
+
+  # ルール2: fuel1のポンプ作動(Y0)を transfer1の条件(X1)にコピー
+  - name: "sync_pump_status"
+    trigger:
+      host: "localhost"
+      port: 15020
+      address: 1     # Y0 (0 + 1)
+      type: "coil"
+    target:
+      host: "localhost"
+      port: 15022
+      address: 1     # X1
+      type: "discrete"
+
+  # ルール3: fuel1の液位(D0)が一定値を超えたら transfer1に通知（アクション例）
+  - name: "level_monitor"
+    source:
+      host: "localhost"
+      port: 15020
+      address: 1     # D0 (0 + 1)
+      type: "hr"
+    actions:
+      - host: "localhost"
+        port: 15022
+        address: 5   # transfer1のD5に燃料情報を送る
+        type: "hr"
+        op: "set"
+        value: 100

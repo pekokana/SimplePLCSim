@@ -18,8 +18,7 @@ class ChaosSlaveContext:
         # __setattr__ を介さずに設定
         object.__setattr__(self, 'original', original_context)
         object.__setattr__(self, 'bridge', bridge)
-        # self.original = original_context
-        # self.bridge = bridge
+
 
     def getValues(self, fc, address, count=1):
         if self.bridge.latency_sec > 0:
@@ -27,21 +26,6 @@ class ChaosSlaveContext:
         return self.original.getValues(fc, address, count)
 
     def setValues(self, fc, address, values):
-        adj_addr = address - 1
-                
-        # --- [修正ポイント] 物理入力注入ロジック ---
-        # FC5 または FC15 で書き込みが来た場合
-        if fc in [5, 15]:
-            # アドレスが 0 〜 Xの個数未満 であれば、それを X への入力とみなす
-            if 0 <= adj_addr < len(self.bridge.plc.mem.X):
-                for i, v in enumerate(values):
-                    target_idx = adj_addr + i
-                    if target_idx < len(self.bridge.plc.mem.X):
-                        # PLCの X メモリを直接更新
-                        self.bridge.plc.mem.X[target_idx] = bool(v)
-                        # 【重要】これがログに出れば成功！
-                        self.bridge.log(f"[SIM_INJECT] Physical Signal: X{target_idx} = {v}")
-
         # 本来の処理（遅延注入など）
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
@@ -68,27 +52,36 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
         super().__init__(address, values)
         self.bridge = bridge
         self.dev_type = dev_type
+        self.is_syncing = False  # 同期中かどうかのフラグ
 
     def setValues(self, address, values):
-        # addressはベースアドレスからのオフセット(0-based)
-        adj_addr = address - 1
-        
-        # もし Coil(Y/M) への書き込みが X領域のアドレス範囲内なら
+        # 最後に親（Modbusの台帳）の値を更新
+        super().setValues(address, values)
+
+        # 同期スレッドからの呼び出し（is_syncing=True）なら、PLCへの反映とログ出力をスキップ
+        if self.is_syncing:
+            return
+
+        # 2. 物理入力(X)への反映ロジック
         if self.dev_type == 'CO':
+            # Pymodbus 3.x の SequentialDataBlock では、
+            # address は既に 0-based のインデックスで渡されることが多いため -1 は不要。
+            # もしこれでズレる場合は address をそのまま使います。
+            base_idx = address - 1
+            
+
             for i, v in enumerate(values):
-                target_idx = adj_addr + i
-                if target_idx < len(self.bridge.plc.mem.X):
-                    # --- ここから修正：変化がある場合のみ処理する ---
+                target_idx = base_idx + i
+                # self.bridge.log(f"setValues param values:{i} > {v} | target_idx:{target_idx}")
+                
+                # PLC の X メモリの範囲内かチェック
+                if 0 <= target_idx < len(self.bridge.plc.mem.X):
                     old_v = self.bridge.plc.mem.X[target_idx]
                     new_v = bool(v)
                     
                     if old_v != new_v:
                         self.bridge.plc.mem.X[target_idx] = new_v
                         self.bridge.log(f"[SIM_INJECT] Physical Signal: X{target_idx} = {new_v}")
-                    # --- ここまで修正 ---
-
-        # 最後に親（Modbusの台帳）の値を更新
-        super().setValues(address, values)
 
 
 class ChaosServerContext:
@@ -183,17 +176,17 @@ class ModbusBridge:
     # -------------------------------------------------
     def sync_from_plc(self):
         self.log("[Modbus] sync thread started")
-        # # 内部同期は遅延させないため original を直接使う
-        # raw_slave_context = self.context.original[0]
 
-        # --- 修正後の確実な取得方法 ---
-        ctx = self.context.original
-        
         # Mansion全体を通さず、保存しておいた「部屋(Device)」を直接操作する
         raw_slave_context = self.raw_device
 
         while True:
             try:
+
+                # 同期開始。InjectedDataBlockのフラグを立ててログ出力を抑制する
+                # raw_device.store['c'] が CO (InjectedDataBlock) インスタンスを指します
+                self.raw_device.store['c'].is_syncing = True
+
                 # ---------- 1. カオス設定の読み取り ----------
                 # HR 10005 を遅延設定用に使用。ここを外部(Python等)から書き換えると遅延が始まる
                 chaos_res = raw_slave_context.getValues(3, self.HR_SYS_BASE + 5, count=1)
@@ -218,21 +211,21 @@ class ModbusBridge:
                 #             self.plc.mem.X[i] = bool(v)
                 # --------------以下、修正後のコード-------------------
                 for i, v in enumerate(self.plc.mem.X):
-                    raw_slave_context.setValues(2, i + 1, [int(v)])
+                    raw_slave_context.setValues(2, i, [int(v)])
 
                 # ---------- 3. Y/M/D 送信処理 ----------
                 # 定義した START アドレスを基準にループ
                 # Y (Coil 0〜)
                 for i, v in enumerate(self.plc.mem.Y):
-                    raw_slave_context.setValues(1, self.ADDR_Y_START + i + 1, [int(v)])
+                    raw_slave_context.setValues(1, self.ADDR_Y_START + i, [int(v)])
                 
                 # M (Coil 1000〜)
                 for i, v in enumerate(self.plc.mem.M):
-                    raw_slave_context.setValues(1, self.ADDR_M_START + i + 1, [int(v)])
+                    raw_slave_context.setValues(1, self.ADDR_M_START + i, [int(v)])
                 
                 # D (HR 0〜)
                 for i, v in enumerate(self.plc.mem.D):
-                    raw_slave_context.setValues(3, self.ADDR_D_START + i + 1, [int(v)])
+                    raw_slave_context.setValues(3, self.ADDR_D_START + i, [int(v)])
                     
                 # ---------- 4. システムレジスタ更新 ----------
                 sys = self.plc.mem.sys
@@ -240,9 +233,16 @@ class ModbusBridge:
                 raw_slave_context.setValues(3, self.HR_SYS_BASE + 1, [sys.scan_count & 0xFFFF])
                 raw_slave_context.setValues(3, self.HR_SYS_BASE + 2, [sys.uptime_sec])
 
+                # 同期終了。フラグを戻す
+                self.raw_device.store['c'].is_syncing = False
+
                 time.sleep(0.1)
 
             except Exception as e:
+                # エラー発生時も念のためフラグを戻す
+                if hasattr(self.raw_device.store['c'], 'is_syncing'):
+                    self.raw_device.store['c'].is_syncing = False
+
                 import traceback
                 self.log(f"[Modbus][ERROR] {e}\n{traceback.format_exc()}")
                 time.sleep(1)

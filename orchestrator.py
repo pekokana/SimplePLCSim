@@ -233,10 +233,12 @@ def show_plc_memory_status(target_name):
             x_cnt = m_limits.get("X", 0)
             if x_cnt > 0:
                 res = client.read_discrete_inputs(address=0, count=x_cnt)
-                print(f"  X (Inputs) afterclient.read_discrete_inputs : {res}")
+                # print(f"  X (Inputs) afterclient.read_discrete_inputs : {res}")
                 if not res.isError():
                     # pymodbus 3.xでは res.bits が直接リストとして扱えます
                     print(f"  X (Inputs)  : {[1 if b else 0 for b in res.bits[:x_cnt]]}")
+                else:
+                    print(f"  X (Inputs)  : [Error] {res}")
 
             # 2. Y (Coils) - FC1
             y_cnt = m_limits.get("Y", 0)

@@ -18,6 +18,8 @@ class ChaosSlaveContext:
         # __setattr__ を介さずに設定
         object.__setattr__(self, 'original', original_context)
         object.__setattr__(self, 'bridge', bridge)
+        # self.original = original_context
+        # self.bridge = bridge
 
     def getValues(self, fc, address, count=1):
         if self.bridge.latency_sec > 0:
@@ -25,9 +27,29 @@ class ChaosSlaveContext:
         return self.original.getValues(fc, address, count)
 
     def setValues(self, fc, address, values):
+        adj_addr = address - 1
+                
+        # --- [修正ポイント] 物理入力注入ロジック ---
+        # FC5 または FC15 で書き込みが来た場合
+        if fc in [5, 15]:
+            # アドレスが 0 〜 Xの個数未満 であれば、それを X への入力とみなす
+            if 0 <= adj_addr < len(self.bridge.plc.mem.X):
+                for i, v in enumerate(values):
+                    target_idx = adj_addr + i
+                    if target_idx < len(self.bridge.plc.mem.X):
+                        # PLCの X メモリを直接更新
+                        self.bridge.plc.mem.X[target_idx] = bool(v)
+                        # 【重要】これがログに出れば成功！
+                        self.bridge.log(f"[SIM_INJECT] Physical Signal: X{target_idx} = {v}")
+
+        # 本来の処理（遅延注入など）
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
         self.original.setValues(fc, address, values)
+
+    # 必須メソッドの委譲
+    def validate(self, fc, address, count=1):
+        return self.original.validate(fc, address, count)
 
     # Pymodbus内部で期待される全メソッド/属性を original に転送する
     def __getattr__(self, name):
@@ -40,18 +62,71 @@ class ChaosSlaveContext:
         else:
             setattr(self.original, name, value)
 
+# --- 1. 書き込みを監視するカスタムブロッククラスを定義 ---
+class InjectedDataBlock(ModbusSequentialDataBlock):
+    def __init__(self, address, values, bridge, dev_type):
+        super().__init__(address, values)
+        self.bridge = bridge
+        self.dev_type = dev_type
+
+    def setValues(self, address, values):
+        # addressはベースアドレスからのオフセット(0-based)
+        adj_addr = address - 1
+        
+        # もし Coil(Y/M) への書き込みが X領域のアドレス範囲内なら
+        if self.dev_type == 'CO':
+            for i, v in enumerate(values):
+                target_idx = adj_addr + i
+                if target_idx < len(self.bridge.plc.mem.X):
+                    # --- ここから修正：変化がある場合のみ処理する ---
+                    old_v = self.bridge.plc.mem.X[target_idx]
+                    new_v = bool(v)
+                    
+                    if old_v != new_v:
+                        self.bridge.plc.mem.X[target_idx] = new_v
+                        self.bridge.log(f"[SIM_INJECT] Physical Signal: X{target_idx} = {new_v}")
+                    # --- ここまで修正 ---
+
+        # 最後に親（Modbusの台帳）の値を更新
+        super().setValues(address, values)
+
+
 class ChaosServerContext:
-    """ModbusServerContextをラップし、ChaosSlaveContextを返す"""
     def __init__(self, original_server_context, bridge):
         self.original = original_server_context
         self.bridge = bridge
 
+    # --- Pymodbus内部が IDを指定してスレーブを取得する時に呼ばれる ---
     def __getitem__(self, slave_id):
-        # slave_id に対応するコンテキストをラップして返す
-        return ChaosSlaveContext(self.original[slave_id], self.bridge)
+        # どのID（0 or 1）で来ても、確実にラップして返す
+        try:
+            raw_slave = self.original[slave_id]
+        except:
+            # 取得失敗時は 1番(default) を試す
+            raw_slave = self.original[1] 
+        
+        return ChaosSlaveContext(raw_slave, self.bridge)
+
+    # --- Pymodbus 3.x が内部で .slaves や .devices を直接参照する場合の対策 ---
+    @property
+    def slaves(self):
+        # 自分が自分を辞書のように振る舞わせる
+        return self
+
+    @property
+    def devices(self):
+        return self
+
+    # dictのように振る舞うための最小限の実装
+    def __contains__(self, key):
+        return True # どんなIDが来ても「あるよ」と答える
+
+    def __iter__(self):
+        return iter([1]) # ID 1 がメインであることを示す
 
     def __setitem__(self, slave_id, context):
         self.original[slave_id] = context
+
 
 # -----------------------------
 # Modbus Bridge
@@ -87,15 +162,20 @@ class ModbusBridge:
 
         # --- 受付名簿（データブロック）の作成 ---
         device = ModbusDeviceContext(
-            di=ModbusSequentialDataBlock(0, [0] * x_count), # X用 (FC2)
-            co=ModbusSequentialDataBlock(0, [0] * co_size), # Y, M用 (FC1)
-            hr=ModbusSequentialDataBlock(0, [0] * hr_size), # D, Sys用 (FC3)
+            di=ModbusSequentialDataBlock(1, [0] * x_count), # X用 (FC2)
+            co=InjectedDataBlock(1, [0] * co_size, self, 'CO'), # Y, M用 (FC1)
+            hr=ModbusSequentialDataBlock(1, [0] * hr_size), # D, Sys用 (FC3)
         )
 
-        # あとは共通
-        raw_context = ModbusServerContext(devices=device, single=True)
+        # 1. 同期スレッドが直接触るための「生のデバイス」を保持
+        self.raw_device = device  
+
+        # 2. サーバー用のコンテキストを作成
+        # 引数名は 'devices' を使用し、辞書形式で ID 1 に割り当てます
+        raw_context = ModbusServerContext(devices={1: device}, single=False)
+        
+        # 3. 自作の ChaosServerContext で包む
         self.context = ChaosServerContext(raw_context, self)
-        self._first_input = True
 
 
     # -------------------------------------------------
@@ -103,8 +183,14 @@ class ModbusBridge:
     # -------------------------------------------------
     def sync_from_plc(self):
         self.log("[Modbus] sync thread started")
-        # 内部同期は遅延させないため original を直接使う
-        raw_slave_context = self.context.original[0]
+        # # 内部同期は遅延させないため original を直接使う
+        # raw_slave_context = self.context.original[0]
+
+        # --- 修正後の確実な取得方法 ---
+        ctx = self.context.original
+        
+        # Mansion全体を通さず、保存しておいた「部屋(Device)」を直接操作する
+        raw_slave_context = self.raw_device
 
         while True:
             try:
@@ -121,25 +207,32 @@ class ModbusBridge:
                             self.log("[CHAOS] Latency Mode Disabled")
 
                 # ---------- 2. X ← Client (FC2) ----------
-                res = raw_slave_context.getValues(2, 0, count=len(self.plc.mem.X))
-                if isinstance(res, list):
-                    for i, v in enumerate(res):
-                        if i < len(self.plc.mem.X):
-                            self.plc.mem.X[i] = bool(v)
+                # Mmodbusの取り扱い解釈誤りのため以下のように修正
+                # deicesimが直接書き換えたPLC.m.xの値を、modbusの台帳(DI)に反映する
+                # これにより、外部(orchestratorなど)から入力状況が見えるようになる想定
+                # --------------以下、修正前のコード -----------------
+                # res = raw_slave_context.getValues(2, 1, count=len(self.plc.mem.X))
+                # if isinstance(res, list):
+                #     for i, v in enumerate(res):
+                #         if i < len(self.plc.mem.X):
+                #             self.plc.mem.X[i] = bool(v)
+                # --------------以下、修正後のコード-------------------
+                for i, v in enumerate(self.plc.mem.X):
+                    raw_slave_context.setValues(2, i + 1, [int(v)])
 
                 # ---------- 3. Y/M/D 送信処理 ----------
                 # 定義した START アドレスを基準にループ
                 # Y (Coil 0〜)
                 for i, v in enumerate(self.plc.mem.Y):
-                    raw_slave_context.setValues(1, self.ADDR_Y_START + i, [int(v)])
+                    raw_slave_context.setValues(1, self.ADDR_Y_START + i + 1, [int(v)])
                 
                 # M (Coil 1000〜)
                 for i, v in enumerate(self.plc.mem.M):
-                    raw_slave_context.setValues(1, self.ADDR_M_START + i, [int(v)])
+                    raw_slave_context.setValues(1, self.ADDR_M_START + i + 1, [int(v)])
                 
                 # D (HR 0〜)
                 for i, v in enumerate(self.plc.mem.D):
-                    raw_slave_context.setValues(3, self.ADDR_D_START + i, [int(v)])
+                    raw_slave_context.setValues(3, self.ADDR_D_START + i + 1, [int(v)])
                     
                 # ---------- 4. システムレジスタ更新 ----------
                 sys = self.plc.mem.sys

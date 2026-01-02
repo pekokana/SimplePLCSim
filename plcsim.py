@@ -243,6 +243,18 @@ class PLC:
                 exec(f"{target} = {new_val}")
                 self.log(f"[LADDER] rung# {rung_idx}: {target} = {new_val}")
 
+        # --- CALC命令 ---
+        elif out_type == "CALC":
+            if en:
+                formula = out.get("formula")
+                try:
+                    # formulaは"self.mem.D[0] = self.mem.D[0] + 1"という文字列など
+                    exec(formula)
+                    # 毎スキャンログを出力すると膨大になるため、デバック時以外は出力を控えめに
+                    # self.log(f"[CALC] {formula}")
+                except Exception as e:
+                    self.log(f"[ERROR] CALC failed: {formula} -> {e}")
+
         elif out_type == "TON":
             preset = out["preset"]
             # target("self.mem.T[1]") をそのままキーにして状態管理
@@ -274,7 +286,6 @@ class PLC:
                 # 物理メモリの値もFalse(0)にリセット
                 exec(f"{target} = False")
                 self.log(f"[RES] {target} reset")
-
 
     def get_bit(self, addr):
         dev = addr[0]
@@ -312,6 +323,15 @@ class PLC:
             self.log("PLC STOP")
             self.logger.close()
 
+    # PLCの物理入力の模擬(devicesimからのXへの入力対応)
+    def set_physical_input(self, addr: int, value: bool):
+        """
+        Modbus通信を介さず、物理的な配線からの入力を模倣して
+        直接 X メモリを書き換える。
+        """
+        if 0 <= addr < len(self.mem.X):
+            self.mem.X[addr] = value
+            self.log(f"[PHYSICAL_INPUT] X{addr} set to {value}")
 
 # -----------------------------
 # 起動

@@ -106,7 +106,7 @@ class IODevice:
             return
 
         try:
-            rr = client.read_holding_registers(self.HB_ADDR, 1, slave=1)
+            rr = client.read_holding_registers(address=self.HB_ADDR, count=1)
             if rr is None or rr.isError():
                 return 
 
@@ -132,12 +132,13 @@ class IODevice:
         if not client: return None
         
         addr = node['address']
+        typ = node['type']
         try:
-            if node['type'] == 'coil':
-                res = client.read_coils(addr, 1, slave=1)
+            if typ in ['discrete', 'coil']:
+                res = client.read_coils(address=addr, count=1)
                 return res.bits[0] if not res.isError() else None
-            elif node['type'] == 'hr':
-                res = client.read_holding_registers(addr, 1, slave=1)
+            elif typ == 'hr':
+                res = client.read_holding_registers(address=addr, count=1)
                 return res.registers[0] if not res.isError() else None
         except Exception as e:
             # 通信エラーは頻出するため、接続が切れた場合は get_client 側で再接続を促す
@@ -149,11 +150,19 @@ class IODevice:
         if not client: return
         
         addr = node['address']
+        typ = node['type']
         try:
-            if node['type'] == 'coil':
-                client.write_coil(addr, value, slave=1)
-            elif node['type'] == 'hr':
-                client.write_register(addr, int(value), slave=1)
+
+            # DeviceSimulator 同様、discrete 指定時は write_coil を使用して
+            # サーバー側の X 領域へ注入する
+            if typ == 'discrete':
+                client.write_coil(address=addr, value=value,)
+                # 書き込み時のログ（デバッグ用）
+                self.log(f"[DEBUG] Write Discrete (Injected) -> {node['host']}:X{addr} = {value}")
+            if typ == 'coil':
+                client.write_coil(address=addr, value=value)
+            elif typ == 'hr':
+                client.write_register(address=addr, value=int(value))
         except Exception as e:
             pass
 

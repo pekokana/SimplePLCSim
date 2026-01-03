@@ -10,6 +10,8 @@ from pymodbus.client import ModbusTcpClient
 
 PYTHON = sys.executable
 
+SERVICE_TYPES = ("plc", "device", "iodevice")
+
 # -----------------------------
 # Orchestrator Logger (Smart Display)
 # -----------------------------
@@ -275,18 +277,62 @@ def show_plc_memory_status(target_name):
 def show_status(start_order):
     print("\n" + "="*90)
     print(f"{'SERVICE NAME':<25} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY':<10} | {'MBUS-PORT':<15}")
-    print("-" * 90)
+    print("-"*26 + "|" + "-"*12 + "|" + "-"*10 + "|" + "-"*14 + "|" + "-"*12 + "|" + "-"*11)
+
+    # summary用カウンタ
+    summary = {
+        t: {
+            "Running": 0,
+            "Stopped": 0,
+        }
+        for t in SERVICE_TYPES
+    }
+
     with state_lock:
         for svc in start_order:
             name = svc["name"]
+            svc_type = svc.get("type", "device")
+
             p = processes.get(name)
-            pid = p.pid if p else "-"
             is_alive = p.poll() is None if p else False
             status = "Running" if is_alive else "Stopped"
+
+            # summary集計
+            if svc_type in summary:
+                summary[svc_type][status] += 1
+
+            pid = p.pid if p else "-"
             ready = "YES" if svc_ready_status.get(name) else "NO"
             mbusport = svc["ready_check"]["port"] if svc['type'] == "plc" else "---"
+
             print(f"{name:<25} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready:<10} | {mbusport}")
+    # status一覧の終わり
     print("="*90 + "\n")
+
+    # summary表
+    print("\nService type summary:")
+    print("-" * 50)
+    print(f"{'TYPE':<10} | {'Running':<10} | {'Stopped':<10} | {'TOTAL':<10}")
+    print("-"*11 + "|" + "-"*12 + "|" + "-"*12 + "|" + "-"*10)
+
+    all_running = 0
+    all_stopped = 0
+
+    for t in SERVICE_TYPES:
+        running = summary[t]["Running"]
+        stopped = summary[t]["Stopped"]
+        total = running + stopped
+
+        all_running += running
+        all_stopped += stopped
+
+        print(f"{t:<10} | {running:<10} | {stopped:<10} | {total:<10}")
+
+    print("-"*11 + "|" + "-"*12 + "|" + "-"*12 + "|" + "-"*10)
+
+    print(f"{'<< All >>':<10} | {all_running:<10} | {all_stopped:<10} | {all_running + all_stopped:<10}")
+
+    print("-" * 50 + "\n")  
 
 def interactive_log_viewer(log_dir):
     search_pattern = os.path.join(log_dir, "*.log")

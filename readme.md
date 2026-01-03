@@ -11,7 +11,7 @@
 1. **Orchestrator**: プロセス管理。PLC、Device、IODeviceを依存関係に基づき起動・監視。
 2. **PLC Simulator**: ロジック演算（ラダー実行） + Modbus TCP サーバー。
 3. **Device Simulator**: 仮想デバイス。PLCに接続し、センサー信号（X）を送り、出力（Y）を模倣。
-4. **IODevice (Bridge)**: **[NEW]** 異なるPLC間、あるいはPLCと外部システムを繋ぐ「神経」。条件に応じたデータ転送やハートビート監視を担当。
+4. **IODevice (Bridge)**: 異なるPLC間、あるいはPLCと外部システムを繋ぐ「神経」。条件に応じたデータ転送やハートビート監視を担当。
 
 ## 特徴
 
@@ -123,6 +123,27 @@ python devicesim.py device_conf/grinder.yaml
 * `+2`: **Uptime** (起動からの経過秒数)
 * `+5`: **Chaos Latency** (ここに書き込んだ数値[秒]だけ Modbus 応答を遅延) 
 
+## デバイスからのDiscrete Input (Device / IODevice)
+
+### X領域（入力信号）への特殊書き込み「SIM_INJECT」
+通常、Modbusの Discrete Inputs は読み取り専用であり、外部から書き込むことはできません。
+しかし、本シミュレータではセンサー入力を模倣するため、以下の仕組みを導入しています。
+
+- プロキシ・インジェクション:
+  - Device や IODevice が type: discrete を指定して write_coil 命令を発行した際、書き込み先が X領域 (0-99) であれば、サーバー内部で本来書き換え不可能な DI用物理メモリを強制的に更新 します。
+
+- メリット:
+  - 通信プロトコルの作法を守った監視（Read）を行いつつ、シミュレータからの外部操作（Write）による「物理現象の注入」が可能です。
+
+### IODevice(Bridge)の拡張
+仮想デバイスからのDiscrete Inputsへ模擬対応したことで、IODeviceシミュレータを活用した複数PLC連携に活用が行えます。
+
+- 複数工程連携:
+  - PLC_A の出力（Y0）をトリガーに、PLC_B の入力（X0）へ信号を転送するなどのインターロックを YAML 定義のみで実現。
+
+- 通信種別の自動判別:
+  - type: discrete 指定により、Modbusの制約を回避した X領域への信号注入（SIM_INJECT）をサポート。
+
 
 ## インタラクティブ管理コンソール (CLI)
 
@@ -133,6 +154,8 @@ python devicesim.py device_conf/grinder.yaml
 | コマンド | 内容 | 実行例 |
 | --- | --- | --- |
 | **`status`** (or `ls`) | 全プロセスの稼働状況、PID、Ready状態を一覧表示 | `status` |
+| **`addr`** | 対象とするPLCのmodbusアドレスマッピング情報を表示 | `addr plc1` |
+| **`info`** | 対象とするPLCの実行中のメモリ情報を表示 | `info plc1` |
 | **`log`** | ログディレクトリからファイルを選択し、末尾数行を表示 | `log` |
 | **`chaos`** | 意図的な障害（停止・遅延）を注入する | `chaos kill plc1` |
 | **`help`** | 利用可能なコマンド一覧を表示 | `help` |

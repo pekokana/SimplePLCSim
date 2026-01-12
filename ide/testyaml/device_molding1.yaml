@@ -1,0 +1,24 @@
+kind: device
+version: "1.0"
+device:
+  name: "molding_machine_1"
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15028
+  cycle_ms: 100
+  signals:
+    # 前工程(加工)から製品が来たことを示すセンサ
+    work_arrival_sensor:
+      type: coil
+      address: 0 # X0
+      pattern:
+        - { value: true, duration_ms: 2000 }
+        - { value: false, duration_ms: 8000 } # 次の成形までの間隔
+    # プレス時の圧力計(D0)の変動をシミュレート
+    press_pressure:
+      type: register
+      address: 0 # D0
+      pattern:
+        - { value: 0, duration_ms: 2000 }
+        - { value: 1500, duration_ms: 5000 } # プレス中の高圧

@@ -446,7 +446,10 @@ def main():
     print(f"[*] Starting system. Logs recorded to: {log_file}")
     for svc in start_order:
         name = svc["name"]
-        cmd = [PYTHON] + svc["command"] + svc.get("args", [])
+        # 開発時用
+        # cmd = [PYTHON] + svc["command"] + svc.get("args", [])
+        # exe化用
+        cmd = svc["command"] + svc.get("args", [])
         logger.log(f"Launching {name}...", console=True)
         processes[name] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         svc_ready_status[name] = check_service_ready(svc)

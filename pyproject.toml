@@ -1,0 +1,18 @@
+[project]
+name = "simpleplcsim"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "flet[all]>=0.80.1",
+    "lark==1.3.1",
+    "pymodbus==3.11.4",
+    "pyyaml==6.0.3",
+    "shiboken6==6.10.1",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.17.0",
+]

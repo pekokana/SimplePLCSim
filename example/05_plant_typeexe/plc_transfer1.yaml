@@ -1,0 +1,14 @@
+kind: plc
+version: "1.0"
+name: "plc_transfer1"
+log_dir: logs
+power: true
+cpu:
+  scan_cycle_ms: 100
+memory:
+  X: 10   # X0:給液開始, X1:停止センサ
+  Y: 10   # Y0:給液ポンプ
+  M: 100  # M100:アラーム
+  D: 100  # D0:液位
+modbus:
+  port: 15024

@@ -1,0 +1,14 @@
+kind: plc
+version: "1.0"
+name: "plc_process2"
+log_dir: logs
+power: true
+cpu:
+  scan_cycle_ms: 100
+memory:
+  X: 10   # X0:移送完了信号(材料投入済), X1:予備
+  Y: 10   # Y0:ヒーター, Y1:攪拌モータ
+  M: 100  # M0:加工中フラグ
+  D: 100  # D0:現在の温度(Deviceから入力想定)
+modbus:
+  port: 15027

@@ -1,0 +1,17 @@
+kind: device
+version: "1.0"
+device:
+  name: "packing_machine_1"
+  log_dir: logs
+  plc:
+    host: localhost
+    port: 15031
+  cycle_ms: 100
+  signals:
+    # 成形層から流れてくる製品を一定間隔でシミュレート
+    product_sensor:
+      type: coil
+      address: 0 # X0
+      pattern:
+        - { value: true, duration_ms: 1000 }
+        - { value: false, duration_ms: 6000 } # 梱包サイクル＋搬送時間

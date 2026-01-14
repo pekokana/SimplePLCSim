@@ -12,13 +12,25 @@ class WelcomeView(ft.Container):
         # UI構築
         self.content = ft.Column([
             ft.Text("SimplePLCSim IDE", size=40, weight="bold"),
-            ft.Text("オーケストレーション定義YAMLを選択して開始してください"),
+            ft.Text("オーケストレーション定義YAMLを選択するか、新規開始をしてください"),
+            # 既存ファイルを開くボタン
             ft.ElevatedButton(
-                "Open Orchestration YAML",
+                "Open Existing Orchestration YAML",
                 icon=ft.Icons.FOLDER_OPEN,
                 on_click=self.pick_file
-            )
+            ),
+            # 新規作成ボタン
+            ft.OutlinedButton(
+                "Create New Orchestration",
+                icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                on_click=self.create_new
+            ),
         ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+
+    async def create_new(self, e):
+        """新規プロジェクトとして初期化して遷移"""
+        self.app_state.create_new_project()
+        await self.on_project_loaded() # OrchestrationViewへ遷移
 
     async def pick_file(self, e):
         self.file_picker = ft.FilePicker()

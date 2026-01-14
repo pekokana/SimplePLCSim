@@ -12,6 +12,7 @@ class ConfigManager:
         # デフォルト構造
         self.config_data = {
             "engines": {
+                "orchestrator": "",
                 "plc": "",
                 "device": "",
                 "iodevice": ""

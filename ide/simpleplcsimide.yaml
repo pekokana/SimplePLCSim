@@ -1,0 +1,6 @@
+engines:
+  device: D:\dev\SimplePLCSim\dist\devicesim.exe
+  iodevice: D:\dev\SimplePLCSim\dist\iodevicesim.exe
+  orchestrator: D:\dev\SimplePLCSim\dist\orchestrator.exe
+  plc: D:\dev\SimplePLCSim\dist\plcsim.exe
+last_opened_project: ''

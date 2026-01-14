@@ -1,0 +1,22 @@
+networks:
+  plc_net:
+    driver: bridge
+services:
+- name: new_plc_1
+  type: plc
+  image: simpleplcsim/plc:latest
+  networks:
+  - plc_net
+  command: D:\dev\SimplePLCSim\dist\plcsim.exe
+- name: new_device_2
+  type: device
+  image: simpleplcsim/device:latest
+  networks:
+  - plc_net
+  command: D:\dev\SimplePLCSim\dist\devicesim.exe
+- name: new_iodevice_3
+  type: iodevice
+  image: simpleplcsim/iodevice:latest
+  networks:
+  - plc_net
+  command: D:\dev\SimplePLCSim\dist\iodevicesim.exe

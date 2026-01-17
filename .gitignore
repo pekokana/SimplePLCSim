@@ -64,3 +64,8 @@ dist/
 
 # fletのビルド用キャッシュ
 __pypackages__/
+
+# 設定ファイル系のyamlを除外
+*.yaml
+/ide/**/*.yaml
+

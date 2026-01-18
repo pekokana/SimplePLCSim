@@ -133,7 +133,7 @@ class PLC:
     def scan(self):
         self.mem.sys.heartbeat += 1
         self.mem.sys.scan_count += 1
-        self.log(f"ladder-info:{self.ladder}")
+        # self.log(f"ladder-info:{self.ladder}")
         for idx, rung in enumerate(self.ladder):
             # 1. END命令の処理
             if rung.get("type") == "END":

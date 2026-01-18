@@ -133,7 +133,7 @@ class PLC:
     def scan(self):
         self.mem.sys.heartbeat += 1
         self.mem.sys.scan_count += 1
-
+        self.log(f"ladder-info:{self.ladder}")
         for idx, rung in enumerate(self.ladder):
             # 1. END命令の処理
             if rung.get("type") == "END":
@@ -246,15 +246,6 @@ class PLC:
             self.log("PLC STOP")
             self.logger.close()
 
-    # PLCの物理入力の模擬(devicesimからのXへの入力対応)
-    def set_physical_input(self, addr: int, value: bool):
-        """
-        Modbus通信を介さず、物理的な配線からの入力を模倣して
-        直接 X メモリを書き換える。
-        """
-        if 0 <= addr < len(self.mem.X):
-            self.mem.X[addr] = value
-            self.log(f"[PHYSICAL_INPUT] X{addr} set to {value}")
 
 # -----------------------------
 # 起動

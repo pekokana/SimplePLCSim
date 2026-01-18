@@ -6,6 +6,7 @@ from pymodbus.datastore import (
 )
 import threading
 import time
+import sys
 
 
 # -----------------------------
@@ -21,11 +22,17 @@ class ChaosSlaveContext:
 
 
     def getValues(self, fc, address, count=1):
+        # どのFCが来ているかログを出す
+        # print(f"[DEBUG] ChaosSlaveContext.getValues: fc={fc}, addr={address}, count={count}",flush=True)
+
+
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
         return self.original.getValues(fc, address, count)
 
     def setValues(self, fc, address, values):
+        # print(f"[DEBUG] ChaosSlaveContext.setValues: fc={fc}, addr={address}, values={values}")
+
         # 本来の処理（遅延注入など）
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
@@ -54,6 +61,14 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
         self.dev_type = dev_type
         self.is_syncing = False  # 同期中かどうかのフラグ
 
+    def getValues(self, address, count=1):
+        # サーバーからの読み出し要求をログに出す
+        # address: プロトコルオフセット (Mなら100以上のはず)
+        # count: 読み出し点数
+        v = super().getValues(address, count)
+        # print(f"[DEBUG-GET] type:{self.dev_type} addr:{address} count:{count} -> {v}")
+        return v
+
     def setValues(self, address, values):
         # 最後に親（Modbusの台帳）の値を更新
         super().setValues(address, values)
@@ -64,12 +79,6 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
 
         # 2. 物理入力(X)への反映ロジック
         if self.dev_type == 'CO':
-            # Pymodbus 3.x の SequentialDataBlock では、
-            # address は既に 0-based のインデックスで渡されることが多いため -1 は不要。
-            # もしこれでズレる場合は address をそのまま使います。
-            # base_idx = address - 1
-            
-
             for i, v in enumerate(values):
                 offset = address + i
                 # Y: 論理1-100 (オフセット0-99)
@@ -81,15 +90,15 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
                     m_idx = offset - 100
                     if m_idx < len(self.bridge.plc.mem.M):
                         self.bridge.plc.mem.M[m_idx] = bool(v)
-        
+                # X: SIM_INJECT用隠しアドレス(オフセット 2000)
+                elif 2000 <= offset < 2100:
+                    x_idx = offset - 2000 - 1
+                    print(f"occurs SIM_INJECT: offset>'{offset}' | x-index: {x_idx} | Value: {bool(v)}")
+                    if x_idx < len(self.bridge.plc.mem.X):
+                        print(f"Done SIM_INJECT: offset>'{offset}' | x-index: {x_idx} | Value: {bool(v)}")
+                        self.bridge.plc.mem.X[x_idx] = bool(v)
+       
         elif self.dev_type == 'HR':
-            # for i, v in enumerate(values):
-            #     offset = address + i
-            #     # D: 論理40001-41000 (オフセット0-999)
-            #     if 0 <= offset < 512:
-            #         if offset < len(self.bridge.plc.mem.D):
-            #             self.bridge.plc.mem.D[offset] = v
-
             for i, v in enumerate(values):
                 offset = address + i
                 if 0 <= offset < self.bridge.OFFS_SYS_BASE: # 512未満（Dレジスタ領域）
@@ -148,6 +157,7 @@ class ModbusBridge:
 
         # --- 新しいアドレスマップ定義 (プロトコルオフセット) ---
         self.OFFS_X_START = 0      # 10001〜 (FC2)
+        self.OFFS_X_COIL_SIM_INJECT_START = 2000 # Device / IODeviceからのX(Discrete Input)に対するSIM_INJECTをするための隠しアドレス
         self.OFFS_Y_START = 0      # 00001〜 (FC1/5/15)
         self.OFFS_M_START = 100    # 00101〜 (FC1/5/15)
         self.OFFS_D_START = 0      # 40001〜 (FC3/6/16)
@@ -165,7 +175,9 @@ class ModbusBridge:
         # self.log(f"[DEBUG] di_block size: {self.OFFS_X_START + x_count}") # ここで 10 以上の数値が出るか確認
         di_block = ModbusSequentialDataBlock(0, [0] * (self.OFFS_X_START + x_count))
         # CO: YとM用 (1〜)
-        co_block = InjectedDataBlock(0, [0] * (self.OFFS_M_START + m_count), self, 'CO')
+        print(f"[debug@@@] offs_m_start:{self.OFFS_X_COIL_SIM_INJECT_START} / m_count:{x_count}")
+        # co_block = InjectedDataBlock(0, [0] * (self.OFFS_M_START + m_count), self, 'CO')
+        co_block = InjectedDataBlock(0, [0] * (self.OFFS_X_COIL_SIM_INJECT_START + x_count), self, 'CO')
         # HR: DとSystem用 (40001〜)
         hr_block = InjectedDataBlock(0, [0] * (self.OFFS_SYS_BASE + 20), self, 'HR')
         device = ModbusDeviceContext(di=di_block, co=co_block, hr=hr_block)
@@ -175,12 +187,24 @@ class ModbusBridge:
 
         # 2. サーバー用のコンテキストを作成
         # 引数名は 'devices' を使用し、辞書形式で ID 1 に割り当てます
-        raw_context = ModbusServerContext(devices={1: device}, single=False)
+        self.raw_context = ModbusServerContext(devices={1: device}, single=False)
         # raw_context = ModbusServerContext(devices=device, single=True)
         
         # 3. 自作の ChaosServerContext で包む
-        self.context = ChaosServerContext(raw_context, self)
+        self.context = ChaosServerContext(self.raw_context, self)
 
+        self.log("======= Modbus Memory Allocation Info =======")
+        for key, block in self.raw_device.store.items():
+            # 各ブロックに割り当てられたリストの長さを取得
+            allocated_size = len(block.values) if hasattr(block, 'values') else "N/A"
+            
+            # 役割の判定（ソースのマップ情報に基づく）
+            role = ""
+            if key in ['d', 'di']: role = "X (Discrete Inputs)"
+            elif key in ['c', 'co']: role = "Y/M + X<SIM_INJECT(Coils)"
+            elif key in ['h', 'hr']: role = "D/System (Holding Registers)"
+            
+            self.log(f"StoreKey: '{key}' | Role: {role:25} | Size: {allocated_size}")
 
     # -------------------------------------------------
     # PLC <-> Modbus 同期
@@ -193,6 +217,10 @@ class ModbusBridge:
                 # 同期開始。InjectedDataBlockのフラグを立ててログ出力を抑制する
                 self.raw_device.store['c'].is_syncing = True
                 self.raw_device.store['h'].is_syncing = True # HRも同期フラグを管理できるようにする場合は追加
+                # print(f"[debug--] {self.raw_device.store}")
+                if 'd' in self.raw_device.store:
+                    # print(f"[debug - flag]if 'd' in self.raw_device.store:")
+                    self.raw_device.store['d'].is_syncing = True
 
                 # 1. カオス設定 (System領域のオフセット5 + 512 = 517 を使用)
 
@@ -206,6 +234,8 @@ class ModbusBridge:
                 # 2. X -> DI (オフセット0〜)
                 for i, v in enumerate(self.plc.mem.X):
                     self.raw_device.setValues(2, self.OFFS_X_START + i, [int(v)])
+                    # SIM_INJECT用の隠しコイルアドレスへの値反映
+                    self.raw_device.setValues(1, self.OFFS_X_COIL_SIM_INJECT_START + i - 1, [int(v)])
 
                 # 3. Y/M -> CO (Yはオフセット0〜, Mはオフセット100〜)
                 for i, v in enumerate(self.plc.mem.Y):
@@ -228,6 +258,7 @@ class ModbusBridge:
                 # 同期終了。フラグを戻す
                 self.raw_device.store['c'].is_syncing = False
                 self.raw_device.store['h'].is_syncing = False
+                self.raw_device.store['d'].is_syncing = False
                 time.sleep(0.05)
 
             except Exception as e:

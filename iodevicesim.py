@@ -48,6 +48,10 @@ class IODevice:
     HB_TIMEOUT = 5.0  # 秒
     RECONNECT_WAIT = 1.0 # 再接続を試みるまでの待機時間（秒）
 
+    # SIM_INJECT
+    DEFAULT_SIM_INJECT_START_ADDR = 2000
+
+
     def __init__(self, yaml_file):
         self.config = self.load_config(yaml_file)
         
@@ -159,6 +163,7 @@ class IODevice:
             # DeviceSimulator 同様、discrete 指定時は write_coil を使用して
             # サーバー側の X 領域へ注入する
             if typ == 'discrete':
+                addr = self.DEFAULT_SIM_INJECT_START_ADDR + addr
                 client.write_coil(address=addr, value=value,)
                 # 書き込み時のログ（デバッグ用）
                 self.log(f"[DEBUG] Write Discrete (Injected) -> {node['host']}:X{addr} = {value}")

@@ -251,6 +251,7 @@ def show_specific_plc_map(target_name):
             ADDR_M_START = 100
             ADDR_D_START = 0
             HR_SYS_BASE  = 512
+            ADDR_X_COIL_SIM_INJECT_START = 2000 # Device / IODeviceからのX(Discrete Input)に対するSIM_INJECTをするための隠しアドレス
 
             print(f"\n--- Modbus Address Map for: {target_name} ({plc_conf_path}) ---")
             # カラムを調整：Logical Addr を追加
@@ -262,6 +263,11 @@ def show_specific_plc_map(target_name):
                 x_end = ADDR_X_START + x_cnt - 1
                 logical = f"{10001 + ADDR_X_START} - {10001 + x_end}"
                 print(f"X0-X{x_cnt-1}    | Discrete Input   | {ADDR_X_START}-{x_end:<7} | {logical:<15} | FC2")
+                # SIM_INJECT
+                sim_inject_end = ADDR_X_COIL_SIM_INJECT_START + x_cnt - 1
+                logical = f"{1 + ADDR_X_COIL_SIM_INJECT_START:05} - {1 + sim_inject_end:05}"
+                print(f"*X0-X{x_cnt-1}   | Coil(SIM-SINJECT)| {ADDR_X_COIL_SIM_INJECT_START}-{sim_inject_end:<7} | {logical:<15} | FC1/5/15")
+                
 
             # Y: Coils (FC1/5/15) - 00001〜
             if y_cnt > 0:
@@ -330,7 +336,7 @@ def show_plc_memory_status(target_name):
             # 1. X (Discrete Inputs) - FC2
             x_cnt = m_limits.get("X", 0)
             if x_cnt > 0:
-                res = client.read_discrete_inputs(address=0, count=x_cnt, device_id=1)
+                res = client.read_discrete_inputs(address=0, count=x_cnt-1, device_id=1)
                 # print(f"  X (Inputs) afterclient.read_discrete_inputs : {res}")
                 if not res.isError():
                     # pymodbus 3.xでは res.bits が直接リストとして扱えます
@@ -345,16 +351,20 @@ def show_plc_memory_status(target_name):
             # 2. Y (Coils) - FC1
             y_cnt = m_limits.get("Y", 0)
             if y_cnt > 0:
-                res = client.read_coils(address=0, count=y_cnt)
+                res = client.read_coils(address=0, count=y_cnt-1)
                 if not res.isError():
                     print(f"  Y (Outputs) : {[1 if b else 0 for b in res.bits[:y_cnt]]}")
+                else:
+                    print(f"  Y (Outputs): [Error] {res}")
 
             # 3. M (Internal Relays) - FC1 (Offset 100)
             m_cnt = m_limits.get("M", 0)
             if m_cnt > 0:
-                res = client.read_coils(address=100, count=m_cnt)
+                res = client.read_coils(address=100, count=m_cnt-1)
                 if not res.isError():
                     print(f"  M (Internal): {[1 if b else 0 for b in res.bits[:m_cnt]]}")
+                else:
+                    print(f"  M (Internal): [Error] {res}")
 
             # 4. D (Data Registers) - FC3
             d_cnt = m_limits.get("D", 0)
@@ -618,15 +628,41 @@ def main():
                     show_specific_plc_map(parts[1])
             elif cmd == "info":
                 if len(parts) < 2:
-                    print("Usage: info <plc_service_name>")
+                    print("Usage: info <plc_service_name> [--watch [count]]")
                 else:
-                    show_plc_memory_status(parts[1])
+                    target_name = parts[1]
+                    
+                    # --- watch オプションの解析 ---
+                    watch_count = 1  # デフォルトは1回(watchなし)
+                    if "--watch" in parts:
+                        idx = parts.index("--watch")
+                        # --watch の後ろに数字があるか確認
+                        if len(parts) > idx + 1 and parts[idx + 1].isdigit():
+                            watch_count = int(parts[idx + 1])
+                        else:
+                            watch_count = 5  # 引数なしの場合はデフォルト5回
+                    
+                    # --- 実行ループ ---
+                    try:
+                        for i in range(watch_count):
+                            if watch_count > 1:
+                                # 監視モード時は画面をクリア
+                                os.system('cls' if os.name == 'nt' else 'clear')
+                                print(f"[*] Watching '{target_name}'... ({i+1}/{watch_count})")
+                            
+                            # 既存の読み取り関数を呼び出し
+                            show_plc_memory_status(target_name)
+                            
+                            if i < watch_count - 1:
+                                time.sleep(1.0)
+                    except KeyboardInterrupt:
+                        print("\n[!] Watch interrupted.")
             elif cmd in ["help", "?"]:
                 print("\nAvailable commands:")
                 print("  status (ls, ps)    : Show status of all services")
                 print(f"{'  status -s':<22} : Show summary of service types only")
                 print("  addr <name>        : Show Modbus address map for a specific PLC")
-                print("  info <name>        : Show real-time memory value (Modbus Read)")
+                print("  info <name> [--watch [n]] : Show memory value (n times, default 5)")
                 print("  log                : Open interactive log viewer")
                 print("-" * 70)
                 print("  chaos kill <name>  : Force kill a service (auto-restart enabled)")

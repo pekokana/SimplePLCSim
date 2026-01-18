@@ -75,7 +75,7 @@ plcsim.exe plc_A.yaml ladder_A.yaml
 ---
 # 各機能の詳細について
 
-- [アーキテクチャ資料](doc\architecture.md) を参照してください。
+- [アーキテクチャ資料](doc/architecture.md) を参照してください。
 ---
 
 ## ラダーロジック構文ルール (Lark準拠)

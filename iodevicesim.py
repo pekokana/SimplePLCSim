@@ -44,7 +44,7 @@ class Logger:
 # IODevice
 # -----------------------------
 class IODevice:
-    HB_ADDR = 10000
+    HB_ADDR = 512
     HB_TIMEOUT = 5.0  # 秒
     RECONNECT_WAIT = 1.0 # 再接続を試みるまでの待機時間（秒）
 
@@ -55,10 +55,13 @@ class IODevice:
         self.connections = self.config.get('connections', [])
         self.cycle = self.config.get('cycle_ms', 200) / 1000.0
         self.log_dir = self.config.get('log_dir')
+        
+        # --- 設定ファイルから読み込み (デフォルト512) ---
+        self.hb_addr = self.config.get('heartbeat_offset', self.DEFAULT_HB_ADDR)
 
         self.logger = Logger(self.name, self.log_dir)
         self.log = self.logger.log
-
+        self.log(f"heartbeat_offset={self.hb_addr}")
         self.clients = {}
         self.last_attempt = {} # 各ホストごとの最終接続試行時刻
         self.hb_states = {}  # 各接続先のハートビート状態
@@ -106,7 +109,7 @@ class IODevice:
             return
 
         try:
-            rr = client.read_holding_registers(address=self.HB_ADDR, count=1)
+            rr = client.read_holding_registers(address=self.hb_addr, count=1)
             if rr is None or rr.isError():
                 return 
 

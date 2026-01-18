@@ -67,22 +67,34 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
             # Pymodbus 3.x の SequentialDataBlock では、
             # address は既に 0-based のインデックスで渡されることが多いため -1 は不要。
             # もしこれでズレる場合は address をそのまま使います。
-            base_idx = address - 1
+            # base_idx = address - 1
             
 
             for i, v in enumerate(values):
-                target_idx = base_idx + i
-                # self.bridge.log(f"setValues param values:{i} > {v} | target_idx:{target_idx}")
-                
-                # PLC の X メモリの範囲内かチェック
-                if 0 <= target_idx < len(self.bridge.plc.mem.X):
-                    old_v = self.bridge.plc.mem.X[target_idx]
-                    new_v = bool(v)
-                    
-                    if old_v != new_v:
-                        self.bridge.plc.mem.X[target_idx] = new_v
-                        self.bridge.log(f"[SIM_INJECT] Physical Signal: X{target_idx} = {new_v}")
+                offset = address + i
+                # Y: 論理1-100 (オフセット0-99)
+                if 0 <= offset < 100:
+                    if offset < len(self.bridge.plc.mem.Y):
+                        self.bridge.plc.mem.Y[offset] = bool(v)
+                # M: 論理101-1000 (オフセット100-999)
+                elif 100 <= offset < 1000:
+                    m_idx = offset - 100
+                    if m_idx < len(self.bridge.plc.mem.M):
+                        self.bridge.plc.mem.M[m_idx] = bool(v)
+        
+        elif self.dev_type == 'HR':
+            # for i, v in enumerate(values):
+            #     offset = address + i
+            #     # D: 論理40001-41000 (オフセット0-999)
+            #     if 0 <= offset < 512:
+            #         if offset < len(self.bridge.plc.mem.D):
+            #             self.bridge.plc.mem.D[offset] = v
 
+            for i, v in enumerate(values):
+                offset = address + i
+                if 0 <= offset < self.bridge.OFFS_SYS_BASE: # 512未満（Dレジスタ領域）
+                    if offset < len(self.bridge.plc.mem.D):
+                        self.bridge.plc.mem.D[offset] = v
 
 class ChaosServerContext:
     def __init__(self, original_server_context, bridge):
@@ -134,31 +146,29 @@ class ModbusBridge:
         self.latency_sec = 0  
         self._first_input = True
 
-        # --- アドレスマップの定義 (ここを基準にすべて自動計算される) ---
-        self.ADDR_Y_START = 0      # Y (Coil) は 0 から開始
-        self.ADDR_M_START = 1000   # M (Coil) は 1000 から開始 (干渉防止)
-        self.ADDR_D_START = 0      # D (Register) は 0 から開始
-        self.HR_SYS_BASE  = 10000  # システム情報は 10000 から開始
+        # --- 新しいアドレスマップ定義 (プロトコルオフセット) ---
+        self.OFFS_X_START = 0      # 10001〜 (FC2)
+        self.OFFS_Y_START = 0      # 00001〜 (FC1/5/15)
+        self.OFFS_M_START = 100    # 00101〜 (FC1/5/15)
+        self.OFFS_D_START = 0      # 40001〜 (FC3/6/16)
+        self.OFFS_SYS_BASE = 512   # 40513〜 (FC3)
 
-        # --- 重要：PLCの実体メモリからサイズを自動取得する ---
-        x_count = len(self.plc.mem.X)  # 例: 100
-        y_count = len(self.plc.mem.Y)  # 例: 100
-        m_count = len(self.plc.mem.M)  # 例: 1000
-        d_count = len(self.plc.mem.D)  # 例: 1000
+        x_count = len(self.plc.mem.X)
+        y_count = len(self.plc.mem.Y)
+        m_count = len(self.plc.mem.M)
+        d_count = len(self.plc.mem.D)
 
-        self.log(f"[Modbus] server init: X={x_count}, Y={y_count}, M={m_count}, D={d_count}")
+        self.log(f"[Modbus] mapping: X=10001-, Y=1-, M=101-, D=40001-, Sys=40513-")
 
-        # --- 名簿（データブロック）のサイズ計算 ---
-        # 必要な長さは「開始アドレス + 実際の個数」
-        co_size = self.ADDR_M_START + m_count 
-        hr_size = self.HR_SYS_BASE + 20 # システム領域分を確保
-
-        # --- 受付名簿（データブロック）の作成 ---
-        device = ModbusDeviceContext(
-            di=ModbusSequentialDataBlock(1, [0] * x_count), # X用 (FC2)
-            co=InjectedDataBlock(1, [0] * co_size, self, 'CO'), # Y, M用 (FC1)
-            hr=ModbusSequentialDataBlock(1, [0] * hr_size), # D, Sys用 (FC3)
-        )
+        # データブロックのサイズ確保
+        # DI: X用 (10001〜)
+        # self.log(f"[DEBUG] di_block size: {self.OFFS_X_START + x_count}") # ここで 10 以上の数値が出るか確認
+        di_block = ModbusSequentialDataBlock(0, [0] * (self.OFFS_X_START + x_count))
+        # CO: YとM用 (1〜)
+        co_block = InjectedDataBlock(0, [0] * (self.OFFS_M_START + m_count), self, 'CO')
+        # HR: DとSystem用 (40001〜)
+        hr_block = InjectedDataBlock(0, [0] * (self.OFFS_SYS_BASE + 20), self, 'HR')
+        device = ModbusDeviceContext(di=di_block, co=co_block, hr=hr_block)
 
         # 1. 同期スレッドが直接触るための「生のデバイス」を保持
         self.raw_device = device  
@@ -166,6 +176,7 @@ class ModbusBridge:
         # 2. サーバー用のコンテキストを作成
         # 引数名は 'devices' を使用し、辞書形式で ID 1 に割り当てます
         raw_context = ModbusServerContext(devices={1: device}, single=False)
+        # raw_context = ModbusServerContext(devices=device, single=True)
         
         # 3. 自作の ChaosServerContext で包む
         self.context = ChaosServerContext(raw_context, self)
@@ -177,66 +188,47 @@ class ModbusBridge:
     def sync_from_plc(self):
         self.log("[Modbus] sync thread started")
 
-        # Mansion全体を通さず、保存しておいた「部屋(Device)」を直接操作する
-        raw_slave_context = self.raw_device
-
         while True:
             try:
-
                 # 同期開始。InjectedDataBlockのフラグを立ててログ出力を抑制する
-                # raw_device.store['c'] が CO (InjectedDataBlock) インスタンスを指します
                 self.raw_device.store['c'].is_syncing = True
+                self.raw_device.store['h'].is_syncing = True # HRも同期フラグを管理できるようにする場合は追加
 
-                # ---------- 1. カオス設定の読み取り ----------
-                # HR 10005 を遅延設定用に使用。ここを外部(Python等)から書き換えると遅延が始まる
-                chaos_res = raw_slave_context.getValues(3, self.HR_SYS_BASE + 5, count=1)
+                # 1. カオス設定 (System領域のオフセット5 + 512 = 517 を使用)
+
+                chaos_res = self.raw_device.getValues(3, self.OFFS_SYS_BASE + 5, count=1)
                 if isinstance(chaos_res, list):
                     new_latency = chaos_res[0]
                     if new_latency != self.latency_sec:
                         self.latency_sec = new_latency
-                        if self.latency_sec > 0:
-                            self.log(f"!!! [CHAOS] Latency Mode Active: {self.latency_sec}s !!!")
-                        else:
-                            self.log("[CHAOS] Latency Mode Disabled")
+                        self.log(f"!!! [CHAOS] Latency: {self.latency_sec}s !!!")
 
-                # ---------- 2. X ← Client (FC2) ----------
-                # Mmodbusの取り扱い解釈誤りのため以下のように修正
-                # deicesimが直接書き換えたPLC.m.xの値を、modbusの台帳(DI)に反映する
-                # これにより、外部(orchestratorなど)から入力状況が見えるようになる想定
-                # --------------以下、修正前のコード -----------------
-                # res = raw_slave_context.getValues(2, 1, count=len(self.plc.mem.X))
-                # if isinstance(res, list):
-                #     for i, v in enumerate(res):
-                #         if i < len(self.plc.mem.X):
-                #             self.plc.mem.X[i] = bool(v)
-                # --------------以下、修正後のコード-------------------
+                # 2. X -> DI (オフセット0〜)
                 for i, v in enumerate(self.plc.mem.X):
-                    raw_slave_context.setValues(2, i, [int(v)])
+                    self.raw_device.setValues(2, self.OFFS_X_START + i, [int(v)])
 
-                # ---------- 3. Y/M/D 送信処理 ----------
-                # 定義した START アドレスを基準にループ
-                # Y (Coil 0〜)
+                # 3. Y/M -> CO (Yはオフセット0〜, Mはオフセット100〜)
                 for i, v in enumerate(self.plc.mem.Y):
-                    raw_slave_context.setValues(1, self.ADDR_Y_START + i, [int(v)])
-                
-                # M (Coil 1000〜)
+                    self.raw_device.setValues(1, self.OFFS_Y_START + i, [int(v)])
                 for i, v in enumerate(self.plc.mem.M):
-                    raw_slave_context.setValues(1, self.ADDR_M_START + i, [int(v)])
-                
-                # D (HR 0〜)
+                    self.raw_device.setValues(1, self.OFFS_M_START + i, [int(v)])
+
+                # 4. D -> HR (オフセット0〜511 までに制限する)
                 for i, v in enumerate(self.plc.mem.D):
-                    raw_slave_context.setValues(3, self.ADDR_D_START + i, [int(v)])
-                    
-                # ---------- 4. システムレジスタ更新 ----------
+                    if i >= self.OFFS_SYS_BASE: # 512 を超えたら終了
+                        break
+                    self.raw_device.setValues(3, self.OFFS_D_START + i, [int(v)])
+
+                # 5. System -> HR (オフセット512〜)
                 sys = self.plc.mem.sys
-                raw_slave_context.setValues(3, self.HR_SYS_BASE + 0, [sys.heartbeat])
-                raw_slave_context.setValues(3, self.HR_SYS_BASE + 1, [sys.scan_count & 0xFFFF])
-                raw_slave_context.setValues(3, self.HR_SYS_BASE + 2, [sys.uptime_sec])
+                self.raw_device.setValues(3, self.OFFS_SYS_BASE + 0, [sys.heartbeat & 0xFFFF])
+                self.raw_device.setValues(3, self.OFFS_SYS_BASE + 1, [sys.scan_count & 0xFFFF])
+                self.raw_device.setValues(3, self.OFFS_SYS_BASE + 2, [sys.uptime_sec & 0xFFFF])
 
                 # 同期終了。フラグを戻す
                 self.raw_device.store['c'].is_syncing = False
-
-                time.sleep(0.1)
+                self.raw_device.store['h'].is_syncing = False
+                time.sleep(0.05)
 
             except Exception as e:
                 # エラー発生時も念のためフラグを戻す
@@ -246,6 +238,8 @@ class ModbusBridge:
                 import traceback
                 self.log(f"[Modbus][ERROR] {e}\n{traceback.format_exc()}")
                 time.sleep(1)
+            
+
 
     # -------------------------------------------------
     # Start Server

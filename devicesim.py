@@ -65,7 +65,7 @@ class DeviceSimulator:
     RECONNECT_WAIT = 1.0
 
     # heartbeat 監視設定
-    HEARTBEAT_ADDR = 10000
+    DEFAULT_HEARTBEAT_ADDR = 512
     HEARTBEAT_TIMEOUT = 3.0   # 秒（変化しなければ NG）
 
     def __init__(self, yaml_file):
@@ -79,11 +79,15 @@ class DeviceSimulator:
         plc = device["plc"]
         self.plc_host = plc["host"]
         self.plc_port = plc["port"]
+        
+        # --- Heartbeatアドレスを設定ファイルから取得 (デフォルト512) ---
+        self.heartbeat_addr = int(plc.get("heartbeat_offset", self.DEFAULT_HEARTBEAT_ADDR))
 
         self.logger = Logger(self.name, self.log_dir)
         self.log = self.logger.log
 
         self.log(f"loading config: {yaml_file}")
+        self.log(f"heartbeat_offset={self.heartbeat_addr}")
         self.log(f"signals={list(self.signals.keys())}")
 
         self.client = None
@@ -103,7 +107,7 @@ class DeviceSimulator:
     # -----------------------------
     def connect_plc(self):
         self.log(f"[Device:{self.name}] connecting to PLC {self.plc_host}:{self.plc_port}")
-        self.client = ModbusTcpClient(self.plc_host, port=self.plc_port, timeout=2)
+        self.client = ModbusTcpClient(self.plc_host, port=self.plc_port, timeout=self.HEARTBEAT_TIMEOUT)
 
         if not self.client.connect():
             raise RuntimeError("initial PLC connection failed")
@@ -139,9 +143,9 @@ class DeviceSimulator:
     # -----------------------------
     def check_heartbeat(self):
         try:
-            # address=10000 は PLC側の HR_SYS_BASE + 0 と一致させる
+            # self.HEARTBEAT_ADDR ではなく self.heartbeat_addr を参照
             rr = self.client.read_holding_registers(
-                address=self.HEARTBEAT_ADDR,
+                address=self.heartbeat_addr,
                 count=1
             )
 
@@ -151,6 +155,7 @@ class DeviceSimulator:
                 return 
 
             hb = rr.registers[0]
+            self.log(f"[DEBUG] Heartbeat check: current_val={hb}, last_val={self.last_heartbeat}, addr={self.heartbeat_addr}")
 
             if self.last_heartbeat is None:
                 self.last_heartbeat = hb
@@ -204,6 +209,8 @@ class DeviceSimulator:
             self.shutdown()
 
     def shutdown(self):
+        # 1. まずログを出す（ファイルが閉じる前に！）
+        self.log(f"[Device:{self.name}] SHUTTING DOWN...")
         try:
             if self.client:
                 self.client.close()
@@ -211,7 +218,10 @@ class DeviceSimulator:
             pass
 
         self.log(f"[Device:{self.name}] STOP")
-        self.logger.close()
+        # 3. 最後にロガーを閉じる
+        if hasattr(self, 'logger'):
+            # Loggerクラス側に「一度閉じたら何もしない」ガードがあるとなお良いです
+            self.logger.close()
 
     # -----------------------------
     # Signal Processing

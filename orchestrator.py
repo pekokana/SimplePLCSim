@@ -6,11 +6,23 @@ import threading
 from datetime import datetime
 import os
 import glob
+import psutil
+import signal
 from pymodbus.client import ModbusTcpClient
 
 PYTHON = sys.executable
 
 SERVICE_TYPES = ("plc", "device", "iodevice")
+
+# -----------------------------
+# subprocess.Popen cmd Builder 
+# -----------------------------
+def get_subproc_popen_cmd(cmd, args):
+    if getattr(sys, "frozen", False):
+        return cmd + args
+    else:
+        return [PYTHON] + cmd + args
+
 
 # -----------------------------
 # Orchestrator Logger (Smart Display)
@@ -115,7 +127,9 @@ def monitor_loop(logger, start_order):
                     
                     if parent_ok:
                         logger.log(f"Attempting to restart {name}...", console=False)
-                        cmd = [PYTHON] + svc["command"] + svc.get("args", [])
+                        # cmd = [PYTHON] + svc["command"] + svc.get("args", [])
+                        # cmd = svc["command"] + svc.get("args", [])
+                        cmd = get_subproc_popen_cmd(svc["command"], svc.get("args", []))
                         processes[name] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 else:
@@ -133,6 +147,77 @@ def monitor_loop(logger, start_order):
                         logger.log(f"[WARN] {name} is running but NOT READY (Modbus failure).", console=True)
 
         time.sleep(2)
+
+# 指定されたPLCのアドレス空間を表示
+def show_specific_plc_map_old(target_name):
+    """特定のPLCサービスのアドレス詳細を表示する"""
+    with state_lock:
+        if target_name not in svc_map:
+            print(f"[!] Service '{target_name}' not found.")
+            return
+
+        svc = svc_map[target_name]
+        plc_conf_path = None
+        for arg in svc.get("args", []):
+            if arg.endswith(".yaml") and ("plc" in arg or "config" in arg):
+                plc_conf_path = arg
+                break
+        
+        if not plc_conf_path or not os.path.exists(plc_conf_path):
+            print(f"[!] Could not find PLC config file for {target_name}.")
+            return
+
+        try:
+            with open(plc_conf_path, "r", encoding="utf-8") as f:
+                p_conf = yaml.safe_load(f)
+            
+            m = p_conf.get("memory", {})
+            x_cnt, y_cnt, m_cnt, d_cnt = m.get("X", 0), m.get("Y", 0), m.get("M", 0), m.get("D", 0)
+
+            # ModbusBridgeの定数
+            ADDR_Y_START = 0
+            ADDR_M_START = 100
+            ADDR_D_START = 0
+            HR_SYS_BASE  = 512
+
+            print(f"\n--- Modbus Address Map for: {target_name} ({plc_conf_path}) ---")
+            print(f"{'PLC Dev':<15} | {'Modbus Type':<18} | {'Address Range':<15} | {'Function Code'}")
+            print("-" * 65)
+
+            # X: Discrete Inputs (FC2)
+            if x_cnt > 0:
+                print(f"X0-X{x_cnt-1:<3} | Discrete Input    | 0 - {x_cnt-1:<10} | FC2 (Read Input Status)")
+
+            # Y: Coils (FC1/5/15)
+            if y_cnt > 0:
+                y_end = ADDR_Y_START + y_cnt - 1
+                print(f"Y0-Y{y_cnt-1:<3} | Coil (Output)     | {ADDR_Y_START} - {y_end:<10} | FC1/5/15 (Coils)")
+
+            # M: Coils (FC1/5/15)
+            if m_cnt > 0:
+                m_end = ADDR_M_START + m_cnt - 1
+                print(f"M0-M{m_cnt-1:<3} | Coil (Internal)   | {ADDR_M_START} - {m_end:<10} | FC1/5/15 (Coils)")
+
+            # D: Holding Registers (FC3/6/16)
+            # if d_cnt > 0:
+            #     d_end = ADDR_D_START + d_cnt - 1
+            #     print(f"D0-D{d_cnt-1:<3} | Holding Register  | {ADDR_D_START} - {d_end:<10} | FC3/6/16 (Registers)")
+            if d_cnt > 0:
+                # Dは512件までに制限される仕様に合わせる
+                d_display_cnt = min(d_cnt, HR_SYS_BASE)
+                d_end = ADDR_D_START + d_display_cnt - 1
+                print(f"D0-D{d_display_cnt-1:<3} | Holding Register  | {ADDR_D_START} - {d_end:<10} | FC3/6/16 (Registers)")
+
+
+            # System
+            print(f"SYS      | System Heartbeat  | {HR_SYS_BASE:<12} | FC3 (Read Only)")
+            print(f"SYS      | Chaos Latency (s) | {HR_SYS_BASE+5:<12} | FC3/6 (Read/Write)")
+            print("-" * 65)
+            print(f"Note: M (Internal Relay) starts from offset {ADDR_M_START} to avoid overlap with Y.")
+            print(f"Note: System Diagnostics area starts from {HR_SYS_BASE}.\n")
+
+        except Exception as e:
+            print(f"[!] Error parsing PLC config: {e}")
 
 # 指定されたPLCのアドレス空間を表示
 def show_specific_plc_map(target_name):
@@ -160,41 +245,52 @@ def show_specific_plc_map(target_name):
             m = p_conf.get("memory", {})
             x_cnt, y_cnt, m_cnt, d_cnt = m.get("X", 0), m.get("Y", 0), m.get("M", 0), m.get("D", 0)
 
-            # ModbusBridgeの定数
+            # ModbusBridgeの定数 (開始アドレス 0 前提)
+            ADDR_X_START = 0
             ADDR_Y_START = 0
-            ADDR_M_START = 1000
+            ADDR_M_START = 100
             ADDR_D_START = 0
-            HR_SYS_BASE  = 10000
+            HR_SYS_BASE  = 512
 
             print(f"\n--- Modbus Address Map for: {target_name} ({plc_conf_path}) ---")
-            print(f"{'PLC Dev':<15} | {'Modbus Type':<18} | {'Address Range':<15} | {'Function Code'}")
-            print("-" * 65)
+            # カラムを調整：Logical Addr を追加
+            print(f"{'PLC Dev'}  | Modbus Type      | {'Offset Range':<12} | {'Logical Addr':<15} | {'FC'}")
+            print("-" * 85)
 
-            # X: Discrete Inputs (FC2)
+            # X: Discrete Inputs (FC2) - 10001〜
             if x_cnt > 0:
-                print(f"X0-X{x_cnt-1:<3} | Discrete Input    | 0 - {x_cnt-1:<10} | FC2 (Read Input Status)")
+                x_end = ADDR_X_START + x_cnt - 1
+                logical = f"{10001 + ADDR_X_START} - {10001 + x_end}"
+                print(f"X0-X{x_cnt-1}    | Discrete Input   | {ADDR_X_START}-{x_end:<7} | {logical:<15} | FC2")
 
-            # Y: Coils (FC1/5/15)
+            # Y: Coils (FC1/5/15) - 00001〜
             if y_cnt > 0:
                 y_end = ADDR_Y_START + y_cnt - 1
-                print(f"Y0-Y{y_cnt-1:<3} | Coil (Output)     | {ADDR_Y_START} - {y_end:<10} | FC1/5/15 (Coils)")
+                logical = f"{1 + ADDR_Y_START:05} - {1 + y_end:05}"
+                print(f"Y0-Y{y_cnt-1}    | Coil (Output)    | {ADDR_Y_START}-{y_end:<7} | {logical:<15} | FC1/5/15")
 
-            # M: Coils (FC1/5/15)
+            # M: Coils (FC1/5/15) - 00001〜 (Offset 100)
             if m_cnt > 0:
                 m_end = ADDR_M_START + m_cnt - 1
-                print(f"M0-M{m_cnt-1:<3} | Coil (Internal)   | {ADDR_M_START} - {m_end:<10} | FC1/5/15 (Coils)")
+                logical = f"{1 + ADDR_M_START:05} - {1 + m_end:05}"
+                print(f"M0-M{m_cnt-1}   | Coil (Internal)  | {ADDR_M_START}-{m_end:<7} | {logical:<15} | FC1/5/15")
 
-            # D: Holding Registers (FC3/6/16)
+            # D: Holding Registers (FC3/6/16) - 40001〜
             if d_cnt > 0:
-                d_end = ADDR_D_START + d_cnt - 1
-                print(f"D0-D{d_cnt-1:<3} | Holding Register  | {ADDR_D_START} - {d_end:<10} | FC3/6/16 (Registers)")
+                d_display_cnt = min(d_cnt, HR_SYS_BASE)
+                d_end = ADDR_D_START + d_display_cnt - 1
+                logical = f"{40001 + ADDR_D_START} - {40001 + d_end}"
+                print(f"D0-D{d_display_cnt-1}   | Holding Register   | {ADDR_D_START}-{d_end:<7} | {logical:<15} | FC3/6/16")
 
-            # System
-            print(f"SYS      | System Heartbeat  | {HR_SYS_BASE:<12} | FC3 (Read Only)")
-            print(f"SYS      | Chaos Latency (s) | {HR_SYS_BASE+5:<12} | FC3/6 (Read/Write)")
-            print("-" * 65)
-            print(f"Note: M (Internal Relay) starts from offset {ADDR_M_START} to avoid overlap with Y.")
-            print(f"Note: System Diagnostics area starts from {HR_SYS_BASE}.\n")
+            # System: Holding Registers - 40001〜
+            sys_hb_logical = 40001 + HR_SYS_BASE
+            sys_ch_logical = 40001 + HR_SYS_BASE + 5
+            print(f"SYS     | System Heartbeat  | {HR_SYS_BASE:<12} | {sys_hb_logical:<15} | FC3")
+            print(f"SYS     | Chaos Latency (s) | {HR_SYS_BASE+5:<12} | {sys_ch_logical:<15} | FC3/6")
+            
+            print("-" * 85)
+            print(f"Note: Offset Range is the 0-based index used in your YAML/Code.")
+            print(f"Note: Logical Addr is the 1-based address for external Modbus tools.\n")
 
         except Exception as e:
             print(f"[!] Error parsing PLC config: {e}")
@@ -234,11 +330,15 @@ def show_plc_memory_status(target_name):
             # 1. X (Discrete Inputs) - FC2
             x_cnt = m_limits.get("X", 0)
             if x_cnt > 0:
-                res = client.read_discrete_inputs(address=0, count=x_cnt)
+                res = client.read_discrete_inputs(address=0, count=x_cnt, device_id=1)
                 # print(f"  X (Inputs) afterclient.read_discrete_inputs : {res}")
                 if not res.isError():
                     # pymodbus 3.xでは res.bits が直接リストとして扱えます
-                    print(f"  X (Inputs)  : {[1 if b else 0 for b in res.bits[:x_cnt]]}")
+                    # print(f"  X (Inputs)  : {[1 if b else 0 for b in res.bits[:x_cnt]]}")
+
+                    bits_list = res.bits[:x_cnt]
+                    formatted_bits = [1 if b else 0 for b in bits_list]
+                    print(f"  X (Inputs)  : {formatted_bits}")
                 else:
                     print(f"  X (Inputs)  : [Error] {res}")
 
@@ -249,20 +349,29 @@ def show_plc_memory_status(target_name):
                 if not res.isError():
                     print(f"  Y (Outputs) : {[1 if b else 0 for b in res.bits[:y_cnt]]}")
 
-            # 3. M (Internal Relays) - FC1 (Offset 1000)
+            # 3. M (Internal Relays) - FC1 (Offset 100)
             m_cnt = m_limits.get("M", 0)
             if m_cnt > 0:
-                res = client.read_coils(address=1000, count=m_cnt)
-                # print(f"  3. M (Internal Relays) client.read_coils(address=1000, count=m_cnt) : {res}")
+                res = client.read_coils(address=100, count=m_cnt)
                 if not res.isError():
                     print(f"  M (Internal): {[1 if b else 0 for b in res.bits[:m_cnt]]}")
 
             # 4. D (Data Registers) - FC3
             d_cnt = m_limits.get("D", 0)
             if d_cnt > 0:
-                res = client.read_holding_registers(address=0, count=d_cnt)
+                # res = client.read_holding_registers(address=0, count=d_cnt)
+                # if not res.isError():
+                #     print(f"  D (Registers): {res.registers[:d_cnt]}")
+                # 同期対象の最大値である512までに制限して読み取る
+                read_cnt = min(d_cnt, 512)
+                res = client.read_holding_registers(address=0, count=read_cnt)
                 if not res.isError():
-                    print(f"  D (Registers): {res.registers[:d_cnt]}")
+                    print(f"  D (Registers): {res.registers[:read_cnt]}")
+
+            # 5. SYS (System) - FC3 (Offset 512) 
+            res = client.read_holding_registers(address=512, count=3)
+            if not res.isError():
+                print(f"  SYS (HB/Scan/Up): {res.registers[:3]}")
 
             client.close()
             print("-" * 40 + "\n")
@@ -274,11 +383,7 @@ def show_plc_memory_status(target_name):
 # -----------------------------
 # CLI Functions (All Features)
 # -----------------------------
-def show_status(start_order):
-    print("\n" + "="*90)
-    print(f"{'SERVICE NAME':<25} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY':<10} | {'MBUS-PORT':<15}")
-    print("-"*26 + "|" + "-"*12 + "|" + "-"*10 + "|" + "-"*14 + "|" + "-"*12 + "|" + "-"*11)
-
+def show_status(start_order, summary_only=False):
     # summary用カウンタ
     summary = {
         t: {
@@ -289,6 +394,7 @@ def show_status(start_order):
     }
 
     with state_lock:
+        process_data = []
         for svc in start_order:
             name = svc["name"]
             svc_type = svc.get("type", "device")
@@ -301,38 +407,51 @@ def show_status(start_order):
             if svc_type in summary:
                 summary[svc_type][status] += 1
 
-            pid = p.pid if p else "-"
-            ready = "YES" if svc_ready_status.get(name) else "NO"
-            mbusport = svc["ready_check"]["port"] if svc['type'] == "plc" else "---"
+            # pid = p.pid if p else "-"
+            # ready = "YES" if svc_ready_status.get(name) else "NO"
+            # mbusport = svc["ready_check"]["port"] if svc['type'] == "plc" else "---"
 
-            print(f"{name:<25} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready:<10} | {mbusport}")
-    # status一覧の終わり
-    print("="*90 + "\n")
+            # print(f"{name:<25} | {svc.get('type', 'dev'):<10} | {pid:<8} | {status:<12} | {ready:<10} | {mbusport}")
 
-    # summary表
-    print("\nService type summary:")
-    print("-" * 50)
-    print(f"{'TYPE':<10} | {'Running':<10} | {'Stopped':<10} | {'TOTAL':<10}")
-    print("-"*11 + "|" + "-"*12 + "|" + "-"*12 + "|" + "-"*10)
+            # 一覧表示用のデータを保持
+            process_data.append({
+                "name": name,
+                "type": svc_type, #svc.get('type', 'dev'),
+                "pid": p.pid if p else "-",
+                "status": status,
+                "ready": "YES" if svc_ready_status.get(name) else "NO",
+                "port": svc["ready_check"]["port"] if svc['type'] == "plc" else "---"
+            })
 
-    all_running = 0
-    all_stopped = 0
+    # 2. 条件分岐による表示
+    if summary_only:
+        # --- サマリのみ表示 (-s) ---
+        print("\nService type summary:")
+        print("-" * 50)
+        print(f"{'TYPE':<10} | {'Running':<10} | {'Stopped':<10} | {'TOTAL':<10}")
+        print("-"*11 + "|" + "-"*12 + "|" + "-"*12 + "|" + "-"*10)
 
-    for t in SERVICE_TYPES:
-        running = summary[t]["Running"]
-        stopped = summary[t]["Stopped"]
-        total = running + stopped
+        all_running = 0
+        all_stopped = 0
+        for t in SERVICE_TYPES:
+            r, s = summary[t]["Running"], summary[t]["Stopped"]
+            all_running += r
+            all_stopped += s
+            print(f"{t:<10} | {r:<10} | {s:<10} | {r + s:<10}")
 
-        all_running += running
-        all_stopped += stopped
+        print("-"*11 + "|" + "-"*12 + "|" + "-"*12 + "|" + "-"*10)
+        print(f"{'<< All >>':<10} | {all_running:<10} | {all_stopped:<10} | {all_running + all_stopped:<10}")
+        print("-" * 50 + "\n")
+    else:
+        # --- 一覧のみ表示 (通常) ---
+        print("\n" + "="*90)
+        print(f"{'SERVICE NAME':<25} | {'TYPE':<10} | {'PID':<8} | {'STATUS':<12} | {'READY':<10} | {'MBUS-PORT':<15}")
+        print("-"*26 + "|" + "-"*12 + "|" + "-"*10 + "|" + "-"*14 + "|" + "-"*12 + "|" + "-"*11)
 
-        print(f"{t:<10} | {running:<10} | {stopped:<10} | {total:<10}")
+        for d in process_data:
+            print(f"{d['name']:<25} | {d['type']:<10} | {d['pid']:<8} | {d['status']:<12} | {d['ready']:<10} | {d['port']}")
 
-    print("-"*11 + "|" + "-"*12 + "|" + "-"*12 + "|" + "-"*10)
-
-    print(f"{'<< All >>':<10} | {all_running:<10} | {all_stopped:<10} | {all_running + all_stopped:<10}")
-
-    print("-" * 50 + "\n")  
+        print("="*90 + "\n")
 
 def interactive_log_viewer(log_dir):
     search_pattern = os.path.join(log_dir, "*.log")
@@ -390,7 +509,9 @@ def execute_chaos(subcmd, target, logger, args=None):
                 # p が存在しない、または poll() が値を返している（停止中）なら起動
                 if p is None or p.poll() is not None:
                     logger.log(f"Launching {target} for resume...", console=True)
-                    cmd = [PYTHON] + svc["command"] + svc.get("args", [])
+                    # cmd = [PYTHON] + svc["command"] + svc.get("args", [])
+                    # cmd = svc["command"] + svc.get("args", [])
+                    cmd = get_subproc_popen_cmd(svc["command"], svc.get("args", []))
                     processes[target] = subprocess.Popen(
                         cmd, 
                         stdout=subprocess.DEVNULL, 
@@ -424,12 +545,22 @@ def execute_chaos(subcmd, target, logger, args=None):
             except ValueError:
                 print("[!] Latency must be an integer (seconds).")
 
+def signal_handler(sig, frame):
+    global running
+    running = False
+    # ここで直接終了処理を呼ぶか、mainのループを抜けさせる
+    print("\n[!] Shutdown signal received.")
 
 # -----------------------------
 # Main Loop
 # -----------------------------
 def main():
     global running, svc_map
+
+    # --- シグナルハンドラの登録 ---
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler) # 終了要求
+
     if len(sys.argv) != 2:
         print("Usage: python orchestrator.py orchestrator.yaml")
         return
@@ -449,7 +580,8 @@ def main():
         # 開発時用
         # cmd = [PYTHON] + svc["command"] + svc.get("args", [])
         # exe化用
-        cmd = svc["command"] + svc.get("args", [])
+        # cmd = svc["command"] + svc.get("args", [])
+        cmd = get_subproc_popen_cmd(svc["command"], svc.get("args", []))
         logger.log(f"Launching {name}...", console=True)
         processes[name] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         svc_ready_status[name] = check_service_ready(svc)
@@ -470,7 +602,8 @@ def main():
             cmd = parts[0]
 
             if cmd in ["status", "ls", "ps"]:
-                show_status(start_order)
+                summary_mode = "-s" in parts
+                show_status(start_order, summary_only=summary_mode)
             elif cmd == "log":
                 interactive_log_viewer(log_dir)
             elif cmd == "chaos":
@@ -491,13 +624,16 @@ def main():
             elif cmd in ["help", "?"]:
                 print("\nAvailable commands:")
                 print("  status (ls, ps)    : Show status of all services")
+                print(f"{'  status -s':<22} : Show summary of service types only")
                 print("  addr <name>        : Show Modbus address map for a specific PLC")
                 print("  info <name>        : Show real-time memory value (Modbus Read)")
                 print("  log                : Open interactive log viewer")
+                print("-" * 70)
                 print("  chaos kill <name>  : Force kill a service (auto-restart enabled)")
                 print("  chaos stop <name>  : Stop a service and disable auto-restart")
                 print("  chaos resume <name>: Re-enable and start a stopped service")
                 print("  chaos delay <name> <sec> : Inject Modbus latency (0 to disable)")
+                print("-" * 70)
                 print("  help (?)           : Show this help")
                 print("  exit (quit)        : Stop all services and exit\n")
             elif cmd in ["exit", "quit"]:
@@ -508,10 +644,41 @@ def main():
         running = False
 
     print("\n[*] Shutting down services...")
+    
+    # 開始順の逆順で終了させる
     for name in reversed([s["name"] for s in start_order]):
-        p = processes.get(name)
-        if p and p.poll() is None: p.terminate()
-    print("[*] Done.")
+        p_sub = processes.get(name)
+        if not p_sub:
+            continue
+        try:
+            # psutilのプロセスオブジェクトを取得
+            parent = psutil.Process(p_sub.pid)
+            
+            # 子プロセス（孫プロセスを含む）をすべて取得
+            children = parent.children(recursive=True)
+           
+            # 1. まず子・孫プロセスに終了信号を送る
+            for child in children:
+                if child.is_running():
+                    child.terminate()
+            
+            # 2. 親（各exe本体）に終了信号を送る
+            if parent.is_running():
+                parent.terminate()
+
+            # 3. 少し待機して、まだ動いていれば強制終了
+            gone, alive = psutil.wait_procs(children + [parent], timeout=3)
+            for p_alive in alive:
+                logger.log(f"Force killing stubborn process: {p_alive.pid}", console=True)
+                p_alive.kill()
+
+        except psutil.NoSuchProcess:
+            # すでに終了している場合はスキップ
+            pass
+        except Exception as e:
+            logger.log(f"Error during shutdown of {name}: {e}", console=True)
+
+    print("[*] All services stopped. Done.")
 
 if __name__ == "__main__":
     main()

@@ -64,6 +64,9 @@ class DeviceSimulator:
     MAX_PLC_ERRORS = 3
     RECONNECT_WAIT = 1.0
 
+    # SIM_INJECT
+    DEFAULT_SIM_INJECT_START_ADDR = 2000
+
     # heartbeat 監視設定
     DEFAULT_HEARTBEAT_ADDR = 512
     HEARTBEAT_TIMEOUT = 3.0   # 秒（変化しなければ NG）
@@ -155,7 +158,7 @@ class DeviceSimulator:
                 return 
 
             hb = rr.registers[0]
-            self.log(f"[DEBUG] Heartbeat check: current_val={hb}, last_val={self.last_heartbeat}, addr={self.heartbeat_addr}")
+            # self.log(f"[DEBUG] Heartbeat check: current_val={hb}, last_val={self.last_heartbeat}, addr={self.heartbeat_addr}")
 
             if self.last_heartbeat is None:
                 self.last_heartbeat = hb
@@ -253,14 +256,16 @@ class DeviceSimulator:
 
             if sig["_last"] != value:
                 addr = sig["address"]
+                # print(f"[debug @@@]run_pattern address -> {addr} / value -> {value}")
                 if is_discrete:
                     # Discrete Input 領域(X)への書き込みとして命令を発行する
                     # modbusサーバ側でこれが Xへの入力だと判別できるようにする
+                    addr = self.DEFAULT_SIM_INJECT_START_ADDR + addr
                     self.client.write_coil(addr, value)
                     self.log(f"[{self.name}] {name} (DI-Injected) -> X{addr} = {value}")
                 elif coil:
                     self.client.write_coil(addr, value)
-                    self.log(f"[{self.name}] {name} -> X{addr} = {value}")
+                    self.log(f"[{self.name}] {name} -> Y{addr} = {value}")
                 elif register:
                     self.client.write_register(addr, value)
                     self.log(f"[{self.name}] {name} -> D{addr} = {value}")

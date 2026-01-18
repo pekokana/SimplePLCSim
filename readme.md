@@ -34,6 +34,9 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
+# pyproject.tomlも付属しているため、uvでの実行も可能です
+# uvを利用する際には特に設定は必要ありません。
+
 ```
 
 ## 実行方法
@@ -44,6 +47,9 @@ pip install -r requirements.txt
 
 ```bash
 python orchestrator.py orchestrator.yaml
+
+# uvを利用する場合
+uv run orchestrator.py orchestrator.yaml
 
 ```
 
@@ -97,31 +103,27 @@ python devicesim.py device_conf/grinder.yaml
 
 ## Modbus アドレスマップ
 
-外部 SCADA や HMI から接続する際の標準的なデータ配置です。本シミュレータでは、デバイスのサイズ拡張による干渉を防ぐため、固定オフセット方式を採用しています。
+外部 SCADA や HMI から接続する際のデータ配置です。本シミュレータは、**Modbus 標準の論理アドレス体系**に準拠しています。
 
-### 1. ビットデータ (Coils / Discrete Inputs)
+##### 1. ビットデータ (Coils / Discrete Inputs)
+| デバイス | 論理アドレス | オフセット | Modbus種別 (FC) | 役割 |
+| :--- | :--- | :--- | :--- | :--- |
+| **X** (入力) | 10001 〜 | 0 〜 | FC2 | 外部センサー、スイッチ等の入力状態 |
+| **Y** (出力) | 1 〜 100 | 0 〜 99 | FC1/5/15 | モーター、ランプ等のアクチュエータ制御 |
+| **M** (内部) | **101** 〜 | **100** 〜 | FC1/5/15 | 制御ロジック用補助リレー |
 
-| デバイス | アドレス範囲 | Modbus種別 (FC) | 役割 |
-| --- | --- | --- | --- |
-| **X** (入力) | `0` 〜 | Discrete Inputs (FC2) | 外部センサー、スイッチ等の入力状態 |
-| **Y** (出力) | `0` 〜 | Coils (FC1/5/15) | モーター、ランプ等のアクチュエータ制御 |
-| **M** (内部) | **`1000`** 〜 | Coils (FC1/5/15) | 制御ロジック用補助リレー |
+##### 2. ワードデータ (Holding Registers)
+| デバイス | 論理アドレス | オフセット | Modbus種別 (FC) | 役割 |
+| :--- | :--- | :--- | :--- | :--- |
+| **D** (データ) | 40001 〜 | 0 〜 | FC3/6/16 | 数値データ、タイマー/カウンタ現在値 |
+| **System** | **40513** 〜 | **512** 〜 | FC3 | PLCの状態監視・診断情報 |
 
-> **Note**: Y と M は同じ Coil 領域に属しますが、M を 1000 番から配置することで、Y の点数が増えてもデータが重複しない設計になっています。
-
-### 2. ワードデータ (Holding Registers)
-
-| デバイス | アドレス範囲 | Modbus種別 (FC) | 役割 |
-| --- | --- | --- | --- |
-| **D** (データ) | `0` 〜 | Holding Regs (FC3/6/16) | 数値データ、タイマー/カウンタ現在値 |
-| **System** | **`10000`** 〜 | Holding Regs (FC3) | PLCの状態監視・診断情報 |
-
-#### システムレジスタ詳細 (`10000`〜)
-
-* `+0`: **Heartbeat** (0.5秒おきに 0/1 が反転)
-* `+1`: **Scan Count** (プログラムの実行回数)
-* `+2`: **Uptime** (起動からの経過秒数)
-* `+5`: **Chaos Latency** (ここに書き込んだ数値[秒]だけ Modbus 応答を遅延) 
+###### システムレジスタ詳細 (オフセット 512 〜)
+標準的な産業用リモートI/Oの仕様に基づき、512番（論理アドレス40513）以降にシステム情報を配置しています。
+*   +0 (40513) : **Heartbeat** (0.5秒おきに 0/1 が反転)
+*   +1 (40514) : **Burnout Type** (予約領域)
+*   +2 (40515) : **Scan Count** (プログラムの実行回数)
+*   +3 (40516) : **Uptime** (起動からの経過秒数)
 
 ## デバイスからのDiscrete Input (Device / IODevice)
 

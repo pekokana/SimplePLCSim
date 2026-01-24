@@ -47,6 +47,8 @@ class SystemMemory:
         self.heartbeat = 0
         self.scan_count = 0
         self.start_time = time.time()
+        self.chaos_delay_sec = 0
+        self.chaos_freeze = 0 # 0:Flase / 1:True
 
     @property
     def uptime_sec(self):
@@ -129,6 +131,8 @@ class PLC:
 
         self.last_snapshot = None
         self.last_alive = time.time()
+
+        self.frozen = False
 
     def scan(self):
         self.mem.sys.heartbeat += 1
@@ -237,9 +241,13 @@ class PLC:
 
         try:
             while self.power:
-                self.scan()
+                if not self.frozen:
+                    self.scan()
+                else:
+                    self.log("PLC FROZEN!")
+
                 if time.time() - self.last_alive > 5:
-                    self.log(f"PLC alive | hb={self.mem.sys.heartbeat} uptime={self.mem.sys.uptime_sec}s")
+                    self.log(f"PLC alive | frozen={self.frozen} hb={self.mem.sys.heartbeat} uptime={self.mem.sys.uptime_sec}s")
                     self.last_alive = time.time()
                 time.sleep(self.scan_cycle)
         finally:

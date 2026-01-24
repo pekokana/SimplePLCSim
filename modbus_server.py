@@ -25,9 +25,9 @@ class ChaosSlaveContext:
         # どのFCが来ているかログを出す
         # print(f"[DEBUG] ChaosSlaveContext.getValues: fc={fc}, addr={address}, count={count}",flush=True)
 
-
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
+
         return self.original.getValues(fc, address, count)
 
     def setValues(self, fc, address, values):
@@ -101,6 +101,17 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
         elif self.dev_type == 'HR':
             for i, v in enumerate(values):
                 offset = address + i
+
+                # ==========================
+                # CHAOS FREEZE CONTROL
+                # ==========================
+                if offset == self.bridge.SYS_CHAOS_FREEZE_CTRL:
+                    self.bridge.plc.frozen = bool(v)
+                    self.bridge.log(
+                        f"[CHAOS] PLC FREEZE {'ON' if v else 'OFF'}"
+                    )
+                    continue  # ★Dレジスタとして扱わない
+
                 if 0 <= offset < self.bridge.OFFS_SYS_BASE: # 512未満（Dレジスタ領域）
                     if offset < len(self.bridge.plc.mem.D):
                         self.bridge.plc.mem.D[offset] = v
@@ -162,6 +173,8 @@ class ModbusBridge:
         self.OFFS_M_START = 100    # 00101〜 (FC1/5/15)
         self.OFFS_D_START = 0      # 40001〜 (FC3/6/16)
         self.OFFS_SYS_BASE = 512   # 40513〜 (FC3)
+        self.SYS_CHAOS_LATENCY = self.OFFS_SYS_BASE + 3
+        self.SYS_CHAOS_FREEZE_CTRL = self.OFFS_SYS_BASE + 4  # ★制御用
 
         x_count = len(self.plc.mem.X)
         y_count = len(self.plc.mem.Y)
@@ -175,7 +188,6 @@ class ModbusBridge:
         # self.log(f"[DEBUG] di_block size: {self.OFFS_X_START + x_count}") # ここで 10 以上の数値が出るか確認
         di_block = ModbusSequentialDataBlock(0, [0] * (self.OFFS_X_START + x_count))
         # CO: YとM用 (1〜)
-        print(f"[debug@@@] offs_m_start:{self.OFFS_X_COIL_SIM_INJECT_START} / m_count:{x_count}")
         # co_block = InjectedDataBlock(0, [0] * (self.OFFS_M_START + m_count), self, 'CO')
         co_block = InjectedDataBlock(0, [0] * (self.OFFS_X_COIL_SIM_INJECT_START + x_count), self, 'CO')
         # HR: DとSystem用 (40001〜)
@@ -210,10 +222,18 @@ class ModbusBridge:
     # PLC <-> Modbus 同期
     # -------------------------------------------------
     def sync_from_plc(self):
+        """
+        Synchronize PLC system values into Modbus registers.
+        This must stop when PLC CPU is frozen.
+        """
         self.log("[Modbus] sync thread started")
 
         while True:
             try:
+                # chaos delay対応
+                if self.latency_sec > 0:
+                    time.sleep(self.latency_sec)
+
                 # 同期開始。InjectedDataBlockのフラグを立ててログ出力を抑制する
                 self.raw_device.store['c'].is_syncing = True
                 self.raw_device.store['h'].is_syncing = True # HRも同期フラグを管理できるようにする場合は追加
@@ -222,14 +242,41 @@ class ModbusBridge:
                     # print(f"[debug - flag]if 'd' in self.raw_device.store:")
                     self.raw_device.store['d'].is_syncing = True
 
-                # 1. カオス設定 (System領域のオフセット5 + 512 = 517 を使用)
+                if self._first_input:
+                    self._first_input = False
+                    self.raw_device.setValues(3, self.OFFS_SYS_BASE + 3, 0)
+                    self.raw_device.setValues(3, self.OFFS_SYS_BASE + 4, 0)
 
-                chaos_res = self.raw_device.getValues(3, self.OFFS_SYS_BASE + 5, count=1)
-                if isinstance(chaos_res, list):
+                # 1-2. chaos freeze設定 (System領域のオフセット4 + 512 = 516 を使用)
+                chaos_freezeres = self.raw_device.getValues(3, self.OFFS_SYS_BASE + 4, count=1)
+                self.log(f"[BOOT] HR freeze reg = {chaos_freezeres}")
+                if isinstance(chaos_freezeres, list) and len(chaos_freezeres) > 0:
+                    new_freeze = chaos_freezeres[0]
+                    if new_freeze == 0: # Flase | Freezeではない
+                        self.plc.frozen = False
+                    elif new_freeze == 1: # True | Freezeである
+                        self.plc.frozen = True
+                    else: # False | 想定外値の場合はFreezeではない扱いとする
+                        self.plc.frozen = False
+
+                # =============================
+                # PLC freeze ガード 
+                # =============================
+                if self.plc.frozen:
+                    # freeze 中は一切同期しない
+                    time.sleep(0.1)
+                    continue
+
+                # 1. chaos delay設定 (System領域のオフセット3 + 512 = 515 を使用)
+                chaos_res = self.raw_device.getValues(3, self.OFFS_SYS_BASE + 3, count=1)
+
+                if isinstance(chaos_res, list) and len(chaos_res) > 0:
                     new_latency = chaos_res[0]
-                    if new_latency != self.latency_sec:
-                        self.latency_sec = new_latency
-                        self.log(f"!!! [CHAOS] Latency: {self.latency_sec}s !!!")
+                    if new_latency > 0:
+                        if new_latency != self.latency_sec:
+                            self.latency_sec = new_latency
+                            self.log(f"!!! [CHAOS] Latency: {self.latency_sec}s !!!")
+
 
                 # 2. X -> DI (オフセット0〜)
                 for i, v in enumerate(self.plc.mem.X):
@@ -276,6 +323,7 @@ class ModbusBridge:
     # Start Server
     # -------------------------------------------------
     def start(self):
+        self.log(f"[BOOT] initial freeze flag = {self.plc.frozen}")
         self.log(f"[Modbus] server START port={self.port}")
         threading.Thread(target=self.sync_from_plc, daemon=True).start()
         # self.context (Chaosラップ済み) をサーバーに渡す

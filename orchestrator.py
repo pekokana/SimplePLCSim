@@ -14,6 +14,10 @@ PYTHON = sys.executable
 
 SERVICE_TYPES = ("plc", "device", "iodevice")
 
+creationflags = 0
+if os.name == "nt":
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
 # -----------------------------
 # subprocess.Popen cmd Builder 
 # -----------------------------
@@ -59,7 +63,8 @@ processes = {}
 svc_ready_status = {}
 svc_map = {}
 state_lock = threading.Lock()
-disabled_services = set()
+# disabled_services = set()
+svc_state = {}  # RUNNING / STOPPED / FROZEN
 
 # -----------------------------
 # Core Functions
@@ -107,13 +112,19 @@ def monitor_loop(logger, start_order):
         with state_lock:
             for svc in start_order:
                 name = svc["name"]
-                if name in disabled_services: continue
+                # if name in disabled_services: continue
+                state = svc_state.get(name, "RUNNING")
+                if state in ("STOPPED", "FROZEN"):
+                    continue
                 
                 p = processes.get(name)
                 is_alive = p and p.poll() is None
 
                 if not is_alive:
-                    # --- [ケース1] プロセスが停止している場合 ---
+                    # # chaos stopしている場合はコンテニューする
+                    # if name in disabled_services:
+                    #     continue
+                    # --- プロセスが停止している場合 ---
                     if svc_ready_status.get(name):
                         svc_ready_status[name] = False
                         logger.log(f"[ALERT] {name} has stopped unexpectedly.", console=True)
@@ -130,7 +141,9 @@ def monitor_loop(logger, start_order):
                         # cmd = [PYTHON] + svc["command"] + svc.get("args", [])
                         # cmd = svc["command"] + svc.get("args", [])
                         cmd = get_subproc_popen_cmd(svc["command"], svc.get("args", []))
-                        processes[name] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        processes[name] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+                        # svc_ready_status[name] = check_service_ready(svc)
+                        svc_state[name] = "RUNNING"
                 
                 else:
                     # --- [ケース2] プロセスは動いている場合 ---
@@ -290,9 +303,9 @@ def show_specific_plc_map(target_name):
 
             # System: Holding Registers - 40001〜
             sys_hb_logical = 40001 + HR_SYS_BASE
-            sys_ch_logical = 40001 + HR_SYS_BASE + 5
+            sys_ch_logical = 40001 + HR_SYS_BASE + 3
             print(f"SYS     | System Heartbeat  | {HR_SYS_BASE:<12} | {sys_hb_logical:<15} | FC3")
-            print(f"SYS     | Chaos Latency (s) | {HR_SYS_BASE+5:<12} | {sys_ch_logical:<15} | FC3/6")
+            print(f"SYS     | Chaos Latency (s) | {HR_SYS_BASE+3:<12} | {sys_ch_logical:<15} | FC3/6")
             
             print("-" * 85)
             print(f"Note: Offset Range is the 0-based index used in your YAML/Code.")
@@ -379,9 +392,10 @@ def show_plc_memory_status(target_name):
                     print(f"  D (Registers): {res.registers[:read_cnt]}")
 
             # 5. SYS (System) - FC3 (Offset 512) 
-            res = client.read_holding_registers(address=512, count=3)
+            res = client.read_holding_registers(address=512, count=5)
+            print(res)
             if not res.isError():
-                print(f"  SYS (HB/Scan/Up): {res.registers[:3]}")
+                print(f"  SYS (HB/Scan/Up/ChaosDelay/ChaosFreeze): {res.registers[:5]}")
 
             client.close()
             print("-" * 40 + "\n")
@@ -428,7 +442,7 @@ def show_status(start_order, summary_only=False):
                 "name": name,
                 "type": svc_type, #svc.get('type', 'dev'),
                 "pid": p.pid if p else "-",
-                "status": status,
+                "status": svc_state.get(name, "RUNNING"),
                 "ready": "YES" if svc_ready_status.get(name) else "NO",
                 "port": svc["ready_check"]["port"] if svc['type'] == "plc" else "---"
             })
@@ -488,7 +502,7 @@ def interactive_log_viewer(log_dir):
         print("[!] Invalid input.")
 
 def execute_chaos(subcmd, target, logger, args=None):
-    global disabled_services
+    # global disabled_services
     with state_lock:
         if target not in svc_map:
             print(f"[!] Service '{target}' not found.")
@@ -497,22 +511,49 @@ def execute_chaos(subcmd, target, logger, args=None):
         svc = svc_map[target]  # サービス設定を取得
         p = processes.get(target)
 
+
         if subcmd == "kill":
             if p and p.poll() is None:
                 p.kill()
+                p.wait()
                 logger.log(f"Chaos: Killed {target}", console=True)
 
         elif subcmd == "stop":
-            disabled_services.add(target)
-            if p and p.poll() is None:
-                p.terminate()
+            svc_state[target] = "STOPPED"
+            # disabled_services.add(target)
+            try:
+                # psutilのプロセスオブジェクトを取得
+                parent = psutil.Process(p.pid)
+                # 子プロセス（孫プロセスを含む）をすべて取得
+                children = parent.children(recursive=True)
+                # 1. まず子・孫プロセスに終了信号を送る
+                for child in children:
+                    if child.is_running():
+                        child.terminate()
+                
+                # 2. 親(各exe本体)に終了信号を送る
+                if parent.is_running():
+                    parent.terminate()
+                
+                # 3. 少し待機して、まだ動いていれば強制終了
+                gone, alive = psutil.wait_procs(children + [parent], timeout=3)
+                for p_alive in alive:
+                    logger.log(f"Force Killing subborn process: {p_alive.pid}", console=True)
+                    p_alive.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                logger.log(f"Chaos Stop Error during stop of {target}: {e}", console=True)
+
             # 明示的にREADY状態も落とす
             svc_ready_status[target] = False
             logger.log(f"Chaos: Stopped {target} (Auto-restart disabled)", console=True)
 
         elif subcmd == "resume":
-            if target in disabled_services:
-                disabled_services.remove(target)
+            # if target in disabled_services:
+            if svc_state.get(target) == "STOPPED":
+                svc_state[target] = "RUNNING"
+                # disabled_services.remove(target)
                 logger.log(f"Chaos: Resuming {target}", console=True)
                 
                 # プロセスが止まっていれば再起動する ---
@@ -541,11 +582,13 @@ def execute_chaos(subcmd, target, logger, args=None):
                 sec = int(args[0])
                 rc = svc.get("ready_check")
                 if rc and rc.get("kind") == "modbus":
-                    # Modbus経由で10005番(HR_SYS_BASE + 5)に書き込む
+                    # Modbus経由で40516番(40513 (HR_SYS_BASE) + 3 = 40516)に書き込む
+                    # Modbus経由の場合のオフセットは 512(HR_SYS_BASE) + 3 = 515
                     client = ModbusTcpClient(rc["host"], port=rc["port"])
                     if client.connect():
-                        # 10000 (Base) + 5 = 10005
-                        client.write_register(10005, sec)
+                        # 40513 (HR_SYS_BASE) + 3 = 40516
+                        # 512(HR_SYS_BASE) + 3 = 515
+                        client.write_register(515, sec)
                         client.close()
                         logger.log(f"Chaos: Injected {sec}s latency to {target}", console=True)
                     else:
@@ -554,6 +597,81 @@ def execute_chaos(subcmd, target, logger, args=None):
                     print(f"[!] Service {target} does not support Modbus chaos injection.")
             except ValueError:
                 print("[!] Latency must be an integer (seconds).")
+        
+        elif subcmd == "freeze":
+            if not p or p.poll() is not None:
+                print(f"[!] {target} is not running.")
+                return
+
+            try:
+                if os.name == "nt":
+                    # Windows
+                    proc = psutil.Process(p.pid)
+                    proc.suspend()
+                else:
+                    # Linux / Unix
+                    os.kill(p.pid, signal.SIGSTOP)
+
+                svc_state[target] = "FROZEN"
+                svc_ready_status[target] = False
+
+                # Modbus経由で40517番(40513 (HR_SYS_BASE) + 4 = 40517)に書き込む
+                # Modbus経由の場合のオフセットは 512(HR_SYS_BASE) + 4 = 516
+                rc = svc.get("ready_check")
+                if rc and rc.get("kind") == "modbus":
+                    client = ModbusTcpClient(rc["host"], port=rc["port"])
+                    if client.connect():
+                        # 40513 (HR_SYS_BASE) + 4 = 40517
+                        # 512(HR_SYS_BASE) + 4 = 516
+                        client.write_register(516, 1)
+                        client.close()
+                        logger.log(f"Chaos: Injected PLC freeze Done.", console=True)
+                    else:
+                        print(f"[!] Could not connect to {target} to inject freeze.")
+
+                logger.log(f"Chaos: Frozen {target}", console=True)
+
+            except Exception as e:
+                logger.log(f"Chaos Freeze Error for {target}: {e}", console=True)
+
+        elif subcmd == "unfreeze":
+            if svc_state.get(target) != "FROZEN":
+                print(f"[!] {target} is not frozen.")
+                return
+
+            try:
+                if os.name == "nt":
+                    # Windows
+                    proc = psutil.Process(p.pid)
+                    proc.resume()
+                else:
+                    # Linux / Unix
+                    os.kill(p.pid, signal.SIGCONT)
+
+                svc_state[target] = "RUNNING"
+                svc_ready_status[target] = False  # READY 再判定させる
+
+                # Modbus経由で40517番(40513 (HR_SYS_BASE) + 4 = 40517)に書き込む
+                # Modbus経由の場合のオフセットは 512(HR_SYS_BASE) + 4 = 516
+                rc = svc.get("ready_check")
+                if rc and rc.get("kind") == "modbus":
+                    client = ModbusTcpClient(rc["host"], port=rc["port"])
+                    if client.connect():
+                        # 40513 (HR_SYS_BASE) + 4 = 40517
+                        # 512(HR_SYS_BASE) + 4 = 516
+                        client.write_register(516, 0)
+                        client.close()
+                        logger.log(f"Chaos: Injected PLC unfreeze Done.", console=True)
+                    else:
+                        print(f"[!] Could not connect to {target} to inject unfreeze.")
+
+                logger.log(f"Chaos: Unfrozen {target}", console=True)
+
+            except Exception as e:
+                logger.log(f"Chaos Unfreeze Error for {target}: {e}", console=True)
+
+
+
 
 def signal_handler(sig, frame):
     global running
@@ -595,6 +713,7 @@ def main():
         logger.log(f"Launching {name}...", console=True)
         processes[name] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         svc_ready_status[name] = check_service_ready(svc)
+        svc_state[name] = "RUNNING"
 
     m_thread = threading.Thread(target=monitor_loop, args=(logger, start_order), daemon=True)
     m_thread.start()
@@ -657,6 +776,7 @@ def main():
                                 time.sleep(1.0)
                     except KeyboardInterrupt:
                         print("\n[!] Watch interrupted.")
+
             elif cmd in ["help", "?"]:
                 print("\nAvailable commands:")
                 print("  status (ls, ps)    : Show status of all services")
@@ -668,6 +788,8 @@ def main():
                 print("  chaos kill <name>  : Force kill a service (auto-restart enabled)")
                 print("  chaos stop <name>  : Stop a service and disable auto-restart")
                 print("  chaos resume <name>: Re-enable and start a stopped service")
+                print("  chaos freeze <name>    : Freeze a running service (SIGSTOP-like)")
+                print("  chaos unfreeze <name>  : Resume a frozen service (SIGCONT-like)")
                 print("  chaos delay <name> <sec> : Inject Modbus latency (0 to disable)")
                 print("-" * 70)
                 print("  help (?)           : Show this help")

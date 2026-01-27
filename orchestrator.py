@@ -121,10 +121,7 @@ def monitor_loop(logger, start_order):
                 is_alive = p and p.poll() is None
 
                 if not is_alive:
-                    # # chaos stopしている場合はコンテニューする
-                    # if name in disabled_services:
-                    #     continue
-                    # --- プロセスが停止している場合 ---
+                    # --- [ケース1] プロセスが停止している場合 ---
                     if svc_ready_status.get(name):
                         svc_ready_status[name] = False
                         logger.log(f"[ALERT] {name} has stopped unexpectedly.", console=True)
@@ -393,10 +390,14 @@ def show_plc_memory_status(target_name):
 
             # 5. SYS (System) - FC3 (Offset 512) 
             res = client.read_holding_registers(address=512, count=5)
-            print(res)
             if not res.isError():
-                print(f"  SYS (HB/Scan/Up/ChaosDelay/ChaosFreeze): {res.registers[:5]}")
-
+                # print(f"  SYS (HB/Scan/Up/ChaosDelay/ChaosFreeze/ChaosPacketLoss Rate): {res.registers[:5]}")
+                print(f"  SYSTEM Memory")
+                print(f"     Heartbeat        : {res.registers[0]}")
+                print(f"     Scan Counter     : {res.registers[1]}")
+                print(f"     StartTime Counter: {res.registers[2]}")
+                print(f"     chaos delay sec  : {res.registers[3]}")
+                print(f"     chaos freeze flg : {res.registers[4]}")
             client.close()
             print("-" * 40 + "\n")
 
@@ -510,7 +511,6 @@ def execute_chaos(subcmd, target, logger, args=None):
         
         svc = svc_map[target]  # サービス設定を取得
         p = processes.get(target)
-
 
         if subcmd == "kill":
             if p and p.poll() is None:
@@ -672,7 +672,6 @@ def execute_chaos(subcmd, target, logger, args=None):
 
 
 
-
 def signal_handler(sig, frame):
     global running
     running = False
@@ -776,7 +775,6 @@ def main():
                                 time.sleep(1.0)
                     except KeyboardInterrupt:
                         print("\n[!] Watch interrupted.")
-
             elif cmd in ["help", "?"]:
                 print("\nAvailable commands:")
                 print("  status (ls, ps)    : Show status of all services")

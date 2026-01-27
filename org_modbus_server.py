@@ -15,7 +15,7 @@ import sys
 class ChaosSlaveContext:
     """SlaveContextをラップし、値の取得・設定時に遅延を注入する"""
     def __init__(self, original_context, bridge):
-        
+        self.log = bridge.log
         # 内部プロパティへの直接アクセスで無限ループを防ぐため
         # __setattr__ を介さずに設定
         object.__setattr__(self, 'original', original_context)
@@ -24,8 +24,7 @@ class ChaosSlaveContext:
 
     def getValues(self, fc, address, count=1):
         # どのFCが来ているかログを出す
-        self.log(f"[DEBUG] ChaosSlaveContext.getValues: fc={fc}, addr={address}, count={count}",flush=True)
-
+        print(f"[DEBUG] ChaosSlaveContext.getValues: fc={fc}, addr={address}, count={count}",flush=True)
 
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
@@ -33,12 +32,12 @@ class ChaosSlaveContext:
         return self.original.getValues(fc, address, count)
 
     def setValues(self, fc, address, values):
-        self.log(f"[DEBUG] ChaosSlaveContext.setValues: fc={fc}, addr={address}, values={values}")
+        print(f"[DEBUG] ChaosSlaveContext.setValues: fc={fc}, addr={address}, values={values}")
+
 
         # 本来の処理（遅延注入など）
         if self.bridge.latency_sec > 0:
             time.sleep(self.bridge.latency_sec)
-
         self.original.setValues(fc, address, values)
 
     # 必須メソッドの委譲
@@ -61,7 +60,7 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
     def __init__(self, address, values, bridge, dev_type):
         super().__init__(address, values)
         self.bridge = bridge
-        
+        self.log = bridge.log
         self.dev_type = dev_type
         self.is_syncing = False  # 同期中かどうかのフラグ
 
@@ -77,14 +76,16 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
         # 最後に親（Modbusの台帳）の値を更新
         super().setValues(address, values)
 
+
         # 同期スレッドからの呼び出し（is_syncing=True）なら、PLCへの反映とログ出力をスキップ
         if self.is_syncing:
             return
-
         # 2. 物理入力(X)への反映ロジック
         if self.dev_type == 'CO':
+
             for i, v in enumerate(values):
                 offset = address + i
+
                 # Y: 論理1-100 (オフセット0-99)
                 if 0 <= offset < 100:
                     if offset < len(self.bridge.plc.mem.Y):
@@ -96,11 +97,8 @@ class InjectedDataBlock(ModbusSequentialDataBlock):
                         self.bridge.plc.mem.M[m_idx] = bool(v)
                 # X: SIM_INJECT用隠しアドレス(オフセット 2000)
                 elif 2000 <= offset < 2100:
-                    # x_idx = offset - 2000 - 1
-                    x_idx = offset - 2000
-                    print(f"occurs SIM_INJECT: offset>'{offset}' | x-index: {x_idx} | Value: {bool(v)}")
+                    x_idx = offset - 2000 - 1
                     if x_idx < len(self.bridge.plc.mem.X):
-                        print(f"Done SIM_INJECT: offset>'{offset}' | x-index: {x_idx} | Value: {bool(v)}")
                         self.bridge.plc.mem.X[x_idx] = bool(v)
        
         elif self.dev_type == 'HR':
@@ -184,20 +182,18 @@ class ModbusBridge:
         y_count = len(self.plc.mem.Y)
         m_count = len(self.plc.mem.M)
         d_count = len(self.plc.mem.D)
-        sysmem_cnt = 20
 
-        # self.log(f"[Modbus] mapping: X=10001-, Y=1-, M=101-, D=40001-, Sys=40513-")
+        self.log(f"[Modbus] mapping: X=10001-, Y=1-, M=101-, D=40001-, Sys=40513-")
 
         # データブロックのサイズ確保
         # DI: X用 (10001〜)
         # self.log(f"[DEBUG] di_block size: {self.OFFS_X_START + x_count}") # ここで 10 以上の数値が出るか確認
         di_block = ModbusSequentialDataBlock(0, [0] * (self.OFFS_X_START + x_count))
         # CO: YとM用 (1〜)
-        print(f"[debug@@@] offs_m_start:{self.OFFS_X_COIL_SIM_INJECT_START} / m_count:{x_count}")
         # co_block = InjectedDataBlock(0, [0] * (self.OFFS_M_START + m_count), self, 'CO')
         co_block = InjectedDataBlock(0, [0] * (self.OFFS_X_COIL_SIM_INJECT_START + x_count), self, 'CO')
         # HR: DとSystem用 (40001〜)
-        hr_block = InjectedDataBlock(0, [0] * (self.OFFS_SYS_BASE + sysmem_cnt), self, 'HR')
+        hr_block = InjectedDataBlock(0, [0] * (self.OFFS_SYS_BASE + 20), self, 'HR')
         device = ModbusDeviceContext(di=di_block, co=co_block, hr=hr_block)
 
         # 1. 同期スレッドが直接触るための「生のデバイス」を保持
@@ -206,8 +202,7 @@ class ModbusBridge:
         # 2. サーバー用のコンテキストを作成
         # 引数名は 'devices' を使用し、辞書形式で ID 1 に割り当てます
         self.raw_context = ModbusServerContext(devices={1: device}, single=False)
-        # self.raw_context = ModbusServerContext(devices=device, single=False)
-        # self.raw_context = ModbusServerContext(devices=device, single=True)
+        # raw_context = ModbusServerContext(devices=device, single=True)
         
         # 3. 自作の ChaosServerContext で包む
         self.context = ChaosServerContext(self.raw_context, self)
@@ -249,6 +244,10 @@ class ModbusBridge:
                     # print(f"[debug - flag]if 'd' in self.raw_device.store:")
                     self.raw_device.store['d'].is_syncing = True
 
+                # if self._first_input:
+                #     self._first_input = False
+                #     self.raw_device.setValues(3, self.OFFS_SYS_BASE + 3, [0])
+                #     self.raw_device.setValues(3, self.OFFS_SYS_BASE + 4, [0])
 
                 # 1-2. chaos freeze設定 (System領域のオフセット4 + 512 = 516 を使用)
                 chaos_freezeres = self.raw_device.getValues(3, self.OFFS_SYS_BASE + 4, count=1)
@@ -272,6 +271,7 @@ class ModbusBridge:
 
                 # 1. chaos delay設定 (System領域のオフセット3 + 512 = 515 を使用)
                 chaos_res = self.raw_device.getValues(3, self.OFFS_SYS_BASE + 3, count=1)
+
                 if isinstance(chaos_res, list) and len(chaos_res) > 0:
                     new_latency = chaos_res[0]
                     if new_latency > 0:
@@ -279,10 +279,12 @@ class ModbusBridge:
                             self.latency_sec = new_latency
                             self.log(f"!!! [CHAOS] Latency: {self.latency_sec}s !!!")
 
+
                 # 2. X -> DI (オフセット0〜)
                 for i, v in enumerate(self.plc.mem.X):
                     self.raw_device.setValues(2, self.OFFS_X_START + i, [int(v)])
                     # SIM_INJECT用の隠しコイルアドレスへの値反映
+                    # self.raw_device.setValues(1, self.OFFS_X_COIL_SIM_INJECT_START + i - 1, [int(v)]) #@@@
                     self.raw_device.setValues(1, self.OFFS_X_COIL_SIM_INJECT_START + i, [int(v)])
 
                 # 3. Y/M -> CO (Yはオフセット0〜, Mはオフセット100〜)
@@ -324,6 +326,7 @@ class ModbusBridge:
     # Start Server
     # -------------------------------------------------
     def start(self):
+        self.log(f"[BOOT] initial freeze flag = {self.plc.frozen}")
         self.log(f"[Modbus] server START port={self.port}")
         threading.Thread(target=self.sync_from_plc, daemon=True).start()
         # self.context (Chaosラップ済み) をサーバーに渡す

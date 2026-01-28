@@ -55,7 +55,7 @@ python orchestrator.py orchestrator.yaml
 
 * **詳しい仕様・設計**
 
-  * **[全体構成](doc/Architecture.md)**: 全体構成・プロセス関係
+  * **[全体構成](doc/architecture.md)**: 全体構成・プロセス関係
   * **[コンポーネント](doc/Components.md)** : Orchestrator / PLC / Device 詳細
   * **[CLI操作](doc/CLI.md)** : Orchestrator CLI 操作
   * **[Chaos設計](doc/ChaosDesign.md)** : Chaos制御の思想と仕様と状態遷移

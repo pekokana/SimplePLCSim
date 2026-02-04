@@ -4,6 +4,9 @@ import os
 from models.config_manager import ConfigManager
 from views.plc_editor import PlcEditorView
 
+import copy
+import difflib
+
 class OrchestrationView(ft.Container):
     def __init__(self, page: ft.Page, state):
         super().__init__(
@@ -203,7 +206,45 @@ class OrchestrationView(ft.Container):
 
         # --- 保存(Apply)ロジック ---
         def apply_changes(e):
-            svc["name"] = name_input.value
+            old_name = svc.get("name")
+            new_name = name_input.value.strip()
+
+            if not new_name:
+                self.app_page.snack_bar = ft.SnackBar(ft.Text("Service name cannot be empty"), bgcolor="red")
+                self.app_page.snack_bar.open = True
+                self.app_page.update()
+                return
+
+            # --- 重複チェック ---
+            for s in self.app_state.config_data.get("services", []):
+                if s is not svc and s.get("name") == new_name:
+                    self.app_page.snack_bar = ft.SnackBar(ft.Text(f"Service name '{new_name}' already exists"), bgcolor="red")
+                    self.app_page.snack_bar.open = True
+                    self.app_page.update()
+                    return
+
+            # --- services 側の名前更新 ---
+            svc["name"] = new_name
+
+            # --- project_files 側のキー追従 ---
+            if old_name != new_name:
+                pf = self.app_state.project_files.get(svc_type, {})
+                if old_name in pf:
+                    pf[new_name] = pf.pop(old_name)
+                    pf[new_name]["name"] = new_name
+
+                # --- args (YAMLファイル名) も追従 ---
+                args = svc.get("args", [])
+                if args:
+                    old_file = args[0]
+                    # plc_xxx.yaml → plc_newname.yaml 形式を想定
+                    base, ext = os.path.splitext(old_file)
+                    prefix = base.split("_", 1)[0]
+                    new_file = f"{prefix}_{new_name}{ext}"
+                    args[0] = new_file
+
+            self.app_state.dirty = True
+
 
             # チェックされた項目だけを depends_on リストに格納
             svc["depends_on"] = [
@@ -278,14 +319,52 @@ class OrchestrationView(ft.Container):
         self.side_panel.padding = 20
         self.update()
 
+    # --- 保存前diff 処理
+    def _make_yaml_diff(self, before: dict, after: dict) -> str:
+        before_txt = yaml.dump(before or {}, sort_keys=False, allow_unicode=True).splitlines(keepends=True)
+        after_txt = yaml.dump(after or {}, sort_keys=False, allow_unicode=True).splitlines(keepends=True)
+        return "".join(difflib.unified_diff(before_txt, after_txt, fromfile="before", tofile="after"))
+
     # --- 保存実行ロジック ---
 
     async def handle_save_project(self, e):
-        """上書き保存。未保存なら Save As へ"""
-        if not self.app_state.orchestration_file or self.app_state.orchestration_file == "Untitled":
-            await self.handle_save_as(e)
-        else:
-            await self._execute_full_save(self.app_state.orchestration_file)
+        before = copy.deepcopy(self.app_state.config_data)
+
+        async def do_save():
+            if not self.app_state.orchestration_file or self.app_state.orchestration_file == "Untitled":
+                await self.handle_save_as(e)
+            else:
+                await self._execute_full_save(self.app_state.orchestration_file)
+
+        diff_txt = self._make_yaml_diff(before, self.app_state.config_data)
+
+        def on_confirm(_):
+            self.app_page.dialog.open = False
+            self.app_page.update()
+            self.app_page.run_task(do_save)
+
+        def on_cancel(_):
+            self.app_page.dialog.open = False
+            self.app_page.update()
+
+        self.app_page.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Save diff preview"),
+            content=ft.Container(
+                content=ft.Text(diff_txt or "No changes."),
+                width=900,
+                height=500,
+                padding=10
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=on_cancel),
+                ft.ElevatedButton("Save", on_click=on_confirm)
+            ]
+        )
+        self.app_page.dialog.open = True
+        self.app_page.update()
+
+
 
     async def handle_save_as(self, e):
         """FilePickerを使用して新しいパスで保存"""
@@ -334,6 +413,9 @@ class OrchestrationView(ft.Container):
             # 4. AppState の保存メソッドを実行
             success, msg = self.app_state.save_all(path, naming_rules, engine_paths)
 
+            if success:
+                self.app_state.dirty = False
+
             # 5. 結果表示
             color = ft.Colors.GREEN_700 if success else ft.Colors.RED_700
             self.app_page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=color)
@@ -353,37 +435,101 @@ class OrchestrationView(ft.Container):
     def did_mount(self):
         self.load_yaml_and_build_ui()
 
+    # def load_yaml_and_build_ui(self):
+    #     self.list_view.controls.clear()
+        
+    #     # 1. 新規プロジェクト（ファイルがまだ存在しない）場合
+    #     if not self.app_state.orchestration_file or not os.path.exists(self.app_state.orchestration_file):
+    #         # 状態管理にある初期データを使ってUIを構築
+    #         services = self.app_state.config_data.get("services", [])
+    #         if not services:
+    #             self.list_view.controls.append(
+    #                 ft.Text("No services defined. Click '+' to add (TBD).", color="grey")
+    #             )
+    #         else:
+    #             for svc in services:
+    #                 self.list_view.controls.append(self.create_service_card(svc))
+    #         self.update()
+    #         return
+
+    #     # 2. 既存ファイルがある場合（従来のロジック）
+    #     try:
+    #         with open(self.app_state.orchestration_file, "r", encoding="utf-8") as f:
+    #             data = yaml.safe_load(f)
+    #             # AppStateに反映させておく
+    #             self.app_state.config_data = data 
+
+    #         services = data.get("services", [])
+    #         for svc in services:
+    #             self.list_view.controls.append(self.create_service_card(svc))
+    #     except Exception as e:
+    #         self.list_view.controls.append(ft.Text(f"Error: {str(e)}", color="red"))
+
+    #     self.update()
+
     def load_yaml_and_build_ui(self):
         self.list_view.controls.clear()
-        
-        # 1. 新規プロジェクト（ファイルがまだ存在しない）場合
-        if not self.app_state.orchestration_file or not os.path.exists(self.app_state.orchestration_file):
-            # 状態管理にある初期データを使ってUIを構築
-            services = self.app_state.config_data.get("services", [])
-            if not services:
-                self.list_view.controls.append(
-                    ft.Text("No services defined. Click '+' to add (TBD).", color="grey")
-                )
-            else:
-                for svc in services:
-                    self.list_view.controls.append(self.create_service_card(svc))
-            self.update()
-            return
+         
+        # 既存ファイルの読み込み
+        if self.app_state.orchestration_file and os.path.exists(str(self.app_state.orchestration_file)):
+            try:
+                with open(self.app_state.orchestration_file, "r", encoding="utf-8") as f:
+                    file_data = yaml.safe_load(f) or {}
 
-        # 2. 既存ファイルがある場合（従来のロジック）
-        try:
-            with open(self.app_state.orchestration_file, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-                # AppStateに反映させておく
-                self.app_state.config_data = data 
+                # services は「未保存のメモリ状態」を優先
+                if "services" not in self.app_state.config_data:
+                    self.app_state.config_data["services"] = file_data.get("services", [])
+                else:
+                    # services 以外の設定だけ同期
+                    for k, v in file_data.items():
+                        if k != "services":
+                            self.app_state.config_data[k] = v
 
-            services = data.get("services", [])
-            for svc in services:
-                self.list_view.controls.append(self.create_service_card(svc))
-        except Exception as e:
-            self.list_view.controls.append(ft.Text(f"Error: {str(e)}", color="red"))
+            except Exception as e:
+                print(f"[WARN] Failed to load orchestration yaml: {e}")
 
+            # 個別YAMLをまとめて読み込み
+            self.load_project_files()
+
+        services = self.app_state.config_data.get("services", [])
+        for svc in services:
+            self.list_view.controls.append(self.create_service_card(svc))
+         
         self.update()
+
+
+    def load_project_files(self):
+        """orchestrator.yaml から参照されている個別 YAML を全てメモリに読み込む"""
+        # 初期化
+        for k in self.app_state.project_files:
+            self.app_state.project_files[k].clear()
+
+        services = self.app_state.config_data.get("services", [])
+        base_dir = os.path.dirname(str(self.app_state.orchestration_file))
+
+        for svc in services:
+            svc_type = svc.get("type")
+            args = svc.get("args", [])
+
+            if not svc_type or not args:
+                continue
+
+            yaml_path = os.path.join(base_dir, args[0])
+
+            if os.path.exists(yaml_path):
+                try:
+                    with open(yaml_path, "r", encoding="utf-8") as f:
+                        self.app_state.project_files[svc_type][svc["name"]] = yaml.safe_load(f)
+                except Exception as e:
+                    print(f"[WARN] Failed to load {yaml_path}: {e}")
+                    self.app_state.project_files[svc_type][svc["name"]] = {}
+            else:
+                # ファイルが無い場合の空データ
+                self.app_state.project_files[svc_type][svc["name"]] = {
+                    "kind": svc_type,
+                    "name": svc.get("name")
+                }
+
 
     def add_service(self, svc_type):
         """新しいサービスをAppStateのデータ構造に追加してUIを再構築"""
@@ -393,7 +539,37 @@ class OrchestrationView(ft.Container):
             "image": f"simpleplcsim/{svc_type}:latest", # デフォルトイメージ
             "networks": ["plc_net"]
         }
-        
+
+
+        # --- サービス種別ごとの最低限スケルトンをメモリに作る ---
+        svc_name = new_svc["name"]
+        if svc_type == "plc":
+            self.app_state.project_files["plc"][svc_name] = {
+                "kind": "plc",
+                "name": svc_name,
+                "ports": [],
+                "registers": [],
+                "coils": []
+            }
+        elif svc_type == "device":
+            self.app_state.project_files["device"][svc_name] = {
+                "kind": "device",
+                "name": svc_name,
+                "register_map": []
+            }
+        elif svc_type == "iodevice":
+            self.app_state.project_files["iodevice"][svc_name] = {
+                "kind": "iodevice",
+                "name": svc_name,
+                "io": []
+            }
+        elif svc_type == "ladder":
+            self.app_state.project_files["ladder"][svc_name] = {
+                "kind": "ladder",
+                "name": svc_name,
+                "rungs": []
+            }
+
         if "services" not in self.app_state.config_data:
             self.app_state.config_data["services"] = []
         
@@ -464,22 +640,6 @@ class OrchestrationView(ft.Container):
             )
         )
 
-    def load_yaml_and_build_ui(self):
-        self.list_view.controls.clear()
-        
-        # 既存ファイルの読み込み、またはAppStateのデータをそのまま使用
-        if self.app_state.orchestration_file and os.path.exists(str(self.app_state.orchestration_file)):
-            try:
-                with open(self.app_state.orchestration_file, "r", encoding="utf-8") as f:
-                    self.app_state.config_data = yaml.safe_load(f)
-            except:
-                pass
-
-        services = self.app_state.config_data.get("services", [])
-        for svc in services:
-            self.list_view.controls.append(self.create_service_card(svc))
-        
-        self.update()
 
     def start_all(self, e):
         print("Starting all services...")
@@ -489,6 +649,74 @@ class OrchestrationView(ft.Container):
 
     def go_to_detail(self, svc):
         """詳細エディタ画面へ遷移するロジック"""
+        if self.app_state.dirty:
+            def do_go(_):
+                self.app_page.dialog.open = False
+                self._open_detail(svc)
+
+            def do_cancel(_):
+                self.app_page.dialog.open = False
+                self.app_page.update()
+
+            self.app_page.dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Unsaved changes"),
+                content=ft.Text("You have unsaved changes. Continue without saving?"),
+                actions=[
+                    ft.TextButton("Cancel", on_click=do_cancel),
+                    ft.ElevatedButton("Continue", on_click=do_go)
+                ]
+            )
+            self.app_page.dialog.open = True
+            self.app_page.update()
+            return
+
+        self._open_detail(svc)
+
+    def sync_plc_summary_from_detail(self, plc_yaml: dict):
+        """PLC詳細設計の内容を services 側の概要情報へ反映"""
+        if not plc_yaml:
+            return
+
+        plc_name = plc_yaml.get("name")
+        if not plc_name:
+            return
+
+        for svc in self.app_state.config_data.get("services", []):
+            if svc.get("type") == "plc" and svc.get("name") == plc_name:
+                # Orchestrator側に持たせたい要約情報を同期
+                svc["name"] = plc_yaml.get("name", svc.get("name"))
+                svc["port"] = plc_yaml.get("modbus", {}).get("port", svc.get("port"))
+
+                # dirty を立てる
+                self.app_state.dirty = True
+                break
+
+
+    def sync_device_summary_from_detail(self, dev_yaml: dict):
+        if not dev_yaml:
+            return
+        name = dev_yaml.get("name")
+        for svc in self.app_state.config_data.get("services", []):
+            if svc.get("type") == "device" and svc.get("name") == name:
+                svc["plc_host"] = dev_yaml.get("plc", {}).get("host", svc.get("plc_host"))
+                svc["cycle_ms"] = dev_yaml.get("cycle_ms", svc.get("cycle_ms"))
+                self.app_state.dirty = True
+                break
+
+    def sync_iodevice_summary_from_detail(self, io_yaml: dict):
+        if not io_yaml:
+            return
+        name = io_yaml.get("name")
+        for svc in self.app_state.config_data.get("services", []):
+            if svc.get("type") == "iodevice" and svc.get("name") == name:
+                svc["io_count"] = len(io_yaml.get("io", []))
+                self.app_state.dirty = True
+                break
+
+
+    def _open_detail(self, svc):
+        """詳細エディタ画面へ遷移するロジック"""
         svc_type = svc.get("type", "").lower()
         
         # サイドパネルを閉じる（広い画面で編集するため）
@@ -496,6 +724,20 @@ class OrchestrationView(ft.Container):
 
         # 詳細画面から「戻る」ボタンが押された時の処理
         def on_back(message=None):
+            # --- PLC詳細 → Orchestrator概要へ同期 ---
+            if svc_type == "plc":
+                plc_yaml = self.app_state.project_files["plc"].get(svc.get("name"))
+                self.sync_plc_summary_from_detail(plc_yaml)
+            # --- Device詳細 → Orchestrator概要へ同期 ---
+            elif svc_type == "device":
+                dev_yaml = self.app_state.project_files["device"].get(svc.get("name"))
+                self.sync_device_summary_from_detail(dev_yaml)
+            # --- iodevice詳細 → Orchestrator概要へ同期 ---
+            elif svc_type == "iodevice":
+                io_yaml = self.app_state.project_files["iodevice"].get(svc.get("name"))
+                self.sync_iodevice_summary_from_detail(io_yaml)
+
+
             # メインコンテンツを元のリスト表示に戻す
             self.content.controls[0] = self.main_content
             self.load_yaml_and_build_ui() # 最新の状態を反映
@@ -509,34 +751,83 @@ class OrchestrationView(ft.Container):
 
         # PLCタイプの場合、PlcEditorViewを表示
         if svc_type == "plc":
+            plc_yaml = self.app_state.project_files["plc"].get(svc["name"])
+
+            if plc_yaml is None:
+                plc_yaml = {
+                    "kind": "plc",
+                    "name": svc["name"],
+                    "ports": [],
+                    "registers": [],
+                    "coils": []
+                }
+                self.app_state.project_files["plc"][svc["name"]] = plc_yaml
+
             editor_view = PlcEditorView(
                 page=self.app_page,
                 state=self.app_state,
-                svc=svc,
+                svc=plc_yaml,
                 on_back=on_back
             )
+
             # 現在のメインコンテンツ（リスト表示部分）をエディタに差し替え
             # self.content は [main_content, side_panel] の Row
             self.content.controls[0] = editor_view
             self.update()
         elif svc_type == "device":
             from views.device_editor import DeviceEditorView
+
+
+            device_yaml = self.app_state.project_files["device"].get(svc["name"])
+
+
+            if device_yaml is None:
+                device_yaml = {
+                    "kind": "device",
+                    "name": svc["name"],
+                    "register_map": []
+                }
+                self.app_state.project_files["device"][svc["name"]] = device_yaml
+
+
             editor_view = DeviceEditorView(
                 page=self.app_page,
                 state=self.app_state,
-                svc=svc,
+                svc=device_yaml,
                 on_back=on_back
             )
+
             self.content.controls[0] = editor_view
             self.update()
+
         elif svc_type == "iodevice":
             from views.iodevice_editor import IoDeviceEditorView
+            # editor_view = IoDeviceEditorView(
+            #     page=self.app_page,
+            #     state=self.app_state,
+            #     svc=svc,
+            #     on_back=on_back
+            # )
+
+            iodev_yaml = self.app_state.project_files["iodevice"].get(svc["name"])
+
+
+            if iodev_yaml is None:
+                iodev_yaml = {
+                    "kind": "iodevice",
+                    "name": svc["name"],
+                    "io": []
+                }
+                self.app_state.project_files["iodevice"][svc["name"]] = iodev_yaml
+
+
             editor_view = IoDeviceEditorView(
                 page=self.app_page,
                 state=self.app_state,
-                svc=svc,
+                svc=iodev_yaml,
                 on_back=on_back
             )
+
             self.content.controls[0] = editor_view
             self.update()
         else:

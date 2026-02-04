@@ -1,7 +1,18 @@
 import flet as ft
+from utils.yaml_utils import rename_entity
 
 class DeviceEditorView(ft.Container):
     def __init__(self, page: ft.Page, state, svc, on_back):
+
+        if svc is None:
+            super().__init__(
+                content=ft.Column([
+                    ft.Text("Device YAML not found.", color="red"),
+                    ft.ElevatedButton("Back", on_click=lambda _: on_back("Device YAML not found"))
+                ])
+            )
+            return
+
         super().__init__(expand=True, padding=30, bgcolor="#1a1c1e")
         self.app_page = page
         self.app_state = state
@@ -233,10 +244,23 @@ class DeviceEditorView(ft.Container):
     def save_settings(self, e):
         try:
             # 1. 基本設定の回収
-            self.svc["name"] = self.name_field.value
+            old_name = self.svc.get("name")
+            new_name = self.name_field.value
+
+            if old_name != new_name:
+                rename_entity(self.app_state, "device", old_name, new_name)
+                self.svc["name"] = new_name
+
             self.svc["log_dir"] = self.log_dir_field.value
-            self.svc["plc"] = {"host": self.host_field.value, "port": int(self.port_field.value), "heartbeat_offset": int(self.heartbeat_offset_field)}
+            self.svc["plc"] = {
+                "host": self.host_field.value,
+                "port": int(self.port_field.value),
+                "heartbeat_offset": int(self.heartbeat_offset_field.value)
+            }
+            
             self.svc["cycle_ms"] = int(self.cycle_field.value)
+            self.app_state.dirty = True
+
 
             # 2. シグナル情報の全回収
             new_signals = {}

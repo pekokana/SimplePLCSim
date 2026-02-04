@@ -7,6 +7,16 @@ class AppState:
         self.config_data = {}
         self.project_dir = None         # 作業ディレクトリ
         self.nodes = []                 # 読み込んだノードリスト
+        self.dirty = False
+
+        # IDE用：編集中の個別YAMLをメモリ保持
+        self.project_files = {
+            "plc": {},
+            "device": {},
+            "iodevice": {},
+            "ladder": {},
+        }
+        self.before_save_snapshot = None
         
     def set_project(self, file_path):
         self.orchestration_file = file_path

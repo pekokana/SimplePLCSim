@@ -1,8 +1,19 @@
 import flet as ft
 import asyncio
+from utils.yaml_utils import rename_entity
 
 class IoDeviceEditorView(ft.Container):
     def __init__(self, page: ft.Page, state, svc, on_back):
+
+        if svc is None:
+            super().__init__(
+                content=ft.Column([
+                    ft.Text("IoDevice YAML not found.", color="red"),
+                    ft.ElevatedButton("Back", on_click=lambda _: on_back("IoDevice YAML not found"))
+                ])
+            )
+            return
+
         super().__init__(expand=True, padding=30, bgcolor="#1a1c1e")
         self.app_page = page
         self.app_state = state
@@ -172,9 +183,18 @@ class IoDeviceEditorView(ft.Container):
 
     def save_settings(self, e):
         try:
-            self.svc["name"] = self.name_field.value
+            old_name = self.svc.get("name")
+            new_name = self.name_field.value
+
+            if old_name != new_name:
+                rename_entity(self.app_state, "device", old_name, new_name)
+                self.svc["name"] = new_name
+
+
             self.svc["cycle_ms"] = int(self.cycle_field.value)
             self.svc["log_dir"] = self.log_dir_field.value
+            self.app_state.dirty = True
+
 
             new_conns = []
             for card in self.conn_column.controls:

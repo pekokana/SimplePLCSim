@@ -1,7 +1,18 @@
 import flet as ft
+from utils.yaml_utils import rename_entity
 
 class PlcEditorView(ft.Container):
     def __init__(self, page: ft.Page, state, svc, on_back):
+
+        if svc is None:
+            super().__init__(
+                content=ft.Column([
+                    ft.Text("PLC YAML not found.", color="red"),
+                    ft.ElevatedButton("Back", on_click=lambda _: on_back("PLC YAML not found"))
+                ])
+            )
+            return
+
         super().__init__(expand=True, padding=30, bgcolor="#1a1c1e")
         self.app_page = page
         self.app_state = state
@@ -144,9 +155,19 @@ class PlcEditorView(ft.Container):
             # 構造に従って値を格納
             self.svc["kind"] = "plc"
             self.svc["version"] = "1.0"
-            self.svc["name"] = self.name_field.value
+
+
+            old_name = self.svc.get("name")
+            new_name = self.name_field.value
+
+            if old_name != new_name:
+                rename_entity(self.app_state, "device", old_name, new_name)
+                self.svc["name"] = new_name
+
             self.svc["log_dir"] = self.log_dir_field.value
             self.svc["power"] = True # 固定値
+            self.app_state.dirty = True
+
             
             self.svc["cpu"] = {"scan_cycle_ms": int(self.scan_cycle_field.value)}
             self.svc["modbus"] = {"port": int(self.port_field.value)}
@@ -157,7 +178,12 @@ class PlcEditorView(ft.Container):
                 "M": int(self.m_input.value),
                 "D": int(self.d_input.value)
             }
-            
+
+            # --- project_files のキーも追従させる ---
+            if old_name and old_name != new_name:
+                plc_map = self.app_state.project_files["plc"]
+                plc_map[new_name] = plc_map.pop(old_name)
+
             # 一覧に戻る
             self.on_back(f"PLC '{self.name_field.value}' updated in memory.")
         except ValueError:
